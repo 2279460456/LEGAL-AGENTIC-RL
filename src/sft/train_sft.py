@@ -156,6 +156,8 @@ def load_model(model_config: ModelConfig):
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    # Set max length for truncation
+    tokenizer.model_max_length = 2048
 
     # Quantization config (QLoRA)
     if model_config.use_4bit:
@@ -353,7 +355,6 @@ def train_sft(
         args=training_args,
         train_dataset=dataset,
         processing_class=tokenizer,
-        max_seq_length=training_config.max_seq_length,
         formatting_func=format_instruction,
         packing=False,
     )
