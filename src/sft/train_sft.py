@@ -109,16 +109,16 @@ def create_training_config(yaml_config: Dict) -> TrainingConfig:
     training_section = yaml_config.get("training", {})
     output_section = yaml_config.get("output", {})
     return TrainingConfig(
-        learning_rate=training_section.get("learning_rate", 2e-4),
-        batch_size=training_section.get("batch_size", 4),
-        gradient_accumulation_steps=training_section.get("gradient_accumulation_steps", 4),
-        num_epochs=training_section.get("num_epochs", 3),
-        max_seq_length=training_section.get("max_seq_length", 2048),
-        warmup_ratio=training_section.get("warmup_ratio", 0.03),
-        weight_decay=training_section.get("weight_decay", 0.01),
-        logging_steps=training_section.get("logging_steps", 10),
-        save_steps=training_section.get("save_steps", 100),
-        save_total_limit=training_section.get("save_total_limit", 3),
+        learning_rate=float(training_section.get("learning_rate", 2e-4)),
+        batch_size=int(training_section.get("batch_size", 4)),
+        gradient_accumulation_steps=int(training_section.get("gradient_accumulation_steps", 4)),
+        num_epochs=int(training_section.get("num_epochs", 3)),
+        max_seq_length=int(training_section.get("max_seq_length", 2048)),
+        warmup_ratio=float(training_section.get("warmup_ratio", 0.03)),
+        weight_decay=float(training_section.get("weight_decay", 0.01)),
+        logging_steps=int(training_section.get("logging_steps", 10)),
+        save_steps=int(training_section.get("save_steps", 100)),
+        save_total_limit=int(training_section.get("save_total_limit", 3)),
         output_dir=output_section.get("output_dir", "models/sft_checkpoint"),
         run_name=output_section.get("run_name", "sft_qwen8b_legal"),
     )
@@ -156,8 +156,8 @@ def load_model(model_config: ModelConfig):
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    # Set max length for truncation
-    tokenizer.model_max_length = 2048
+    # Set max length - use larger value to avoid truncation warnings
+    tokenizer.model_max_length = 4096
 
     # Quantization config (QLoRA)
     if model_config.use_4bit:
@@ -356,7 +356,6 @@ def train_sft(
         train_dataset=dataset,
         processing_class=tokenizer,
         formatting_func=format_instruction,
-        packing=False,
     )
 
     # Train
