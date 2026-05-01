@@ -1,0 +1,79 @@
+[project]
+name = "legal-agenttic-rl"
+version = "0.1.0"
+description = "Multi-Agent Reinforcement Learning for Legal Judgment Prediction"
+authors = [
+    { name = "Legal Agenttic RL Team" }
+]
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+
+dependencies = [
+    # Core ML Framework - GPU version (CUDA 12.1)
+    "torch==2.2.2",
+    "transformers==4.44.2",
+    "accelerate==0.33.0",
+
+    # Parameter-Efficient Fine-Tuning
+    "peft==0.12.0",
+    "bitsandbytes==0.43.3",
+
+    # RLHF Framework
+    "trl==0.11.4",
+
+    # Data Processing
+    "datasets==2.20.0",
+    "pandas==2.2.2",
+    "numpy==1.26.4",
+
+    # Evaluation
+    "scikit-learn==1.5.1",
+
+    # Utilities
+    "tqdm==4.66.4",
+    "pyyaml==6.0.1",
+    "omegaconf==2.3.0",
+
+    # Logging
+    "wandb==0.17.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.2",
+    "black==24.8.0",
+    "isort==5.13.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+# PyTorch CUDA 12.1 索引配置 (适用于 RTX 3090/4090)
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv]
+dev-dependencies = [
+    "pytest==8.3.2",
+    "black==24.8.0",
+    "isort==5.13.2",
+]
+
+# Black formatting config
+[tool.black]
+line-length = 120
+target-version = ["py310", "py311", "py312"]
+
+# isort config
+[tool.isort]
+profile = "black"
+line_length = 120
