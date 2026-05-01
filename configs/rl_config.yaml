@@ -1,0 +1,64 @@
+# RL Training Configuration
+# LEGAL-AGENTIC-RL Project
+
+# GRPO Configuration
+grpo:
+  group_size: 4  # Number of trajectories per group (G)
+  temperature: 1.0  # Sampling temperature for diversity
+  top_p: 0.9  # Top-p sampling
+  max_turns: 10  # Maximum conversation turns per episode
+  early_stop_patience: 5  # Stop if no improvement for N epochs
+
+# Environment Configuration
+environment:
+  evidence_levels:
+    - "subjective"  # Level 1: Motive, premeditation
+    - "objective"   # Level 2: Action details, injury degree
+    - "sentencing"  # Level 3: Confession, compensation
+  trigger_method: "keyword"  # keyword or semantic
+  max_rounds: 10
+
+# Reward Configuration
+reward:
+  weights:
+    accuracy: 0.5  # lambda_1
+    information: 0.3  # lambda_2
+    compliance: 0.2  # lambda_3
+  accuracy:
+    crime_weight: 0.4
+    sentence_weight: 0.3
+    law_weight: 0.3
+  information:
+    new_evidence_bonus: 0.1
+    repeat_penalty: -0.05
+    irrelevant_penalty: -0.02
+  compliance:
+    term_bonus: 0.02
+    step_bonus: 0.05
+    round_penalty: -0.1
+
+# Training Configuration
+training:
+  learning_rate: 1e-5
+  batch_size: 1  # Process one case at a time
+  num_episodes: 1000
+  eval_interval: 50
+  save_interval: 100
+
+# Model Configuration
+model:
+  sft_checkpoint: "models/sft_checkpoint"
+  base_model: "Qwen/Qwen2.5-7B-Instruct"
+
+# Data Configuration
+data:
+  train_cases_path: "data/rl_env/train_cases.json"
+  test_cases_path: "data/rl_env/test_cases.json"
+  num_train_cases: 500
+  num_test_cases: 100
+
+# Output Configuration
+output:
+  output_dir: "models/rl_checkpoint"
+  log_dir: "results/logs"
+  run_name: "grpo_legal_agent"

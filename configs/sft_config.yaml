@@ -1,0 +1,51 @@
+# SFT Training Configuration
+# LEGAL-AGENTIC-RL Project
+
+# Model Configuration
+model:
+  base_model: "Qwen/Qwen2.5-7B-Instruct"
+  use_4bit: true  # 4-bit quantization for memory efficiency
+  use_double_quant: true
+  quant_type: "nf4"
+
+# LoRA Configuration
+lora:
+  r: 64  # LoRA rank
+  lora_alpha: 16
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  lora_dropout: 0.05
+  bias: "none"
+
+# Training Configuration
+training:
+  learning_rate: 2e-4
+  batch_size: 4
+  gradient_accumulation_steps: 4
+  num_epochs: 3
+  max_seq_length: 2048
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  logging_steps: 10
+  save_steps: 100
+  save_total_limit: 3
+
+# Data Configuration
+data:
+  train_data_path: "data/processed"
+  num_samples: 5000  # Target number of samples per role
+  roles:
+    - "prosecutor"
+    - "defender"
+    - "judge"
+
+# Output Configuration
+output:
+  output_dir: "models/sft_checkpoint"
+  run_name: "sft_qwen7b_legal_roles"

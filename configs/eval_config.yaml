@@ -1,0 +1,56 @@
+# Evaluation Configuration
+# LEGAL-AGENTIC-RL Project
+
+# Model Paths
+models:
+  our_method: "models/rl_checkpoint/final"
+  sft_only: "models/sft_checkpoint/final"
+  traditional_ljp: "models/baseline/traditional_ljp"
+  single_agent: "models/baseline/single_agent"
+
+# Test Data
+test_data:
+  path: "data/rl_env/test_cases.json"
+  num_samples: 500
+
+# Evaluation Metrics
+metrics:
+  # Judgment Accuracy
+  accuracy:
+    - "crime_f1"  # F1 score for crime classification
+    - "sentence_mae"  # Mean Absolute Error for sentence length (months)
+    - "law_recall"  # Recall for cited laws
+
+  # Investigation Efficiency
+  efficiency:
+    - "avg_rounds"  # Average number of rounds to reach judgment
+    - "evidence_recall"  # Proportion of key evidence discovered
+    - "invalid_query_rate"  # Proportion of ineffective queries
+
+  # Procedure Compliance
+  compliance:
+    - "term_norm"  # Legal terminology correctness
+    - "reasoning_complete"  # CoT step completeness score
+
+# Evaluation Methods
+methods:
+  auto_eval:
+    enabled: true
+    metrics: ["crime_f1", "sentence_mae", "law_recall", "avg_rounds", "evidence_recall"]
+    use_llm_eval: true  # Use LLM for reasoning quality evaluation
+    llm_model: "deepseek-chat"  # or gpt-4
+
+  human_eval:
+    enabled: true
+    sample_size: 100
+    eval_dimensions:
+      - "事实认定全面性"
+      - "法律适用正确性"
+      - "量刑考量合理性"
+      - "推理逻辑连贯性"
+
+# Output
+output:
+  results_dir: "results/eval_results"
+  report_format: "json"
+  generate_tables: true  # Generate comparison tables for paper
