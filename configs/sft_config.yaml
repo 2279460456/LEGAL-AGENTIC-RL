@@ -2,22 +2,13 @@
 # LEGAL-AGENTIC-RL Project
 
 # ============================================================================
-#方案一：标准LoRA（FP16，显存需求 >=16GB）
-# 推荐优先使用，训练精度更高
-# ============================================================================
-# model:
-#   base_model: "Qwen/Qwen3-8B"
-#   # 无量化，原始精度加载
-
-# ============================================================================
-# 方案二：QLoRA（4-bit量化，显存需求 <16GB）
-# 显存不足时使用
+# 关闭后三个参数即lora，开启为qlora
 # ============================================================================
 model:
   base_model: "Qwen/Qwen3-8B"
-  use_4bit: true  # 4-bit quantization for memory efficiency
-  use_double_quant: true
-  quant_type: "nf4"
+  # use_4bit: true  # 4-bit quantization for memory efficiency
+  # use_double_quant: true
+  # quant_type: "nf4"
 
 # LoRA Configuration
 lora:
