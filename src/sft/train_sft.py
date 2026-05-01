@@ -178,12 +178,14 @@ def load_model(model_config: ModelConfig):
         print("Using full precision (standard LoRA)")
         model = AutoModelForCausalLM.from_pretrained(
             model_config.base_model,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
         )
 
-    print(f"Model loaded. Device map: {model.hf_device_map}")
+    # Get device info safely
+    device = next(model.parameters()).device
+    print(f"Model loaded on device: {device}")
     return model, tokenizer
 
 
@@ -402,7 +404,7 @@ def merge_lora_and_save(
     print(f"Loading base model: {base_model}")
     base = AutoModelForCausalLM.from_pretrained(
         base_model,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
     )

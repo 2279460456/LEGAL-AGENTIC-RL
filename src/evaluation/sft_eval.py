@@ -80,7 +80,7 @@ class SFTEvaluator:
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_path,
             device_map="auto",
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             trust_remote_code=True
         )
 

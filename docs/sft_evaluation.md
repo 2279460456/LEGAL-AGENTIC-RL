@@ -304,7 +304,7 @@ class SFTEvaluator:
         self.model = AutoModelForCausalLM.from_pretrained(
             model_path,
             device_map="auto",
-            torch_dtype=torch.bfloat16
+            dtype=torch.bfloat16
         )
         
     def generate(self, instruction: str, input_text: str, max_length: int = 512) -> str:
