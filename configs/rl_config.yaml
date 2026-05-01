@@ -48,7 +48,7 @@ training:
 # Model Configuration
 model:
   sft_checkpoint: "models/sft_checkpoint"
-  base_model: "Qwen/Qwen2.5-7B-Instruct"
+  base_model: "Qwen/Qwen3-8B"
 
 # Data Configuration
 data:

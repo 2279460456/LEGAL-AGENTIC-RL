@@ -1,9 +1,20 @@
 # SFT Training Configuration
 # LEGAL-AGENTIC-RL Project
 
-# Model Configuration
+# ============================================================================
+#方案一：标准LoRA（FP16，显存需求 >=16GB）
+# 推荐优先使用，训练精度更高
+# ============================================================================
+# model:
+#   base_model: "Qwen/Qwen3-8B"
+#   # 无量化，原始精度加载
+
+# ============================================================================
+# 方案二：QLoRA（4-bit量化，显存需求 <16GB）
+# 显存不足时使用
+# ============================================================================
 model:
-  base_model: "Qwen/Qwen2.5-7B-Instruct"
+  base_model: "Qwen/Qwen3-8B"
   use_4bit: true  # 4-bit quantization for memory efficiency
   use_double_quant: true
   quant_type: "nf4"
@@ -48,4 +59,4 @@ data:
 # Output Configuration
 output:
   output_dir: "models/sft_checkpoint"
-  run_name: "sft_qwen7b_legal_roles"
+  run_name: "sft_qwen8b_legal_roles"
