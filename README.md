@@ -18,61 +18,112 @@
 LEGAL-AGENTIC-RL/
 ├── data/                      # 数据目录
 │   ├── raw/                   # 原始判决书数据
-│   ├── processed/             # SFT训练数据
+│   │   ├── agentscourt-data/  # SimuCourt数据集
+│   │   │   ├── SimuCourt(1).json  # 一审案例
+│   │   │   └── SimuCourt(2).json  # 二审案例
+│   │   └── judge-data/        # Judge-Data数据集
+│   │       ├── all.json       # 结构化判决数据
+│   │       ├── train.json     # 训练集
+│   │       └── test.json      # 测试集
+│   ├── processed/             # SFT训练数据（生成后）
+│   │   ├── prosecutor.json    # 检察官角色数据
+│   │   ├── defender.json      # 辩护律师数据
+│   │   ├── judge.json         # 法官角色数据
+│   │   └── all_roles.json     # 合并数据
 │   └── rl_env/                # RL环境数据
 │
 ├── src/                       # 源代码
 │   ├── data_processing/       # 数据处理模块
+│   │   ├── sft_templates.py   # SFT数据模板定义
+│   │   ├── generate_sft_data.py  # SFT数据生成脚本
+│   │   ├── cot_distill.py     # CoT思维链蒸馏
+│   │   ├── evidence_split.py  # 证据拆分（隐藏-触发）
+│   │   └── dataset_builder.py # 数据集构建
 │   ├── sft/                   # SFT训练模块
+│   │   └── train_sft.py       # LoRA/QLoRA训练实现
 │   ├── rl/                    # RL训练模块
+│   │   ├── environment.py     # 法律多智能体环境
+│   │   ├── reward.py          # 多维奖励函数
+│   │   ├── grpo.py            # GRPO算法实现
+│   │   └── train_rl.py        # RL训练入口
 │   └── evaluation/            # 评估模块
+│       └── metrics.py         # 评估指标计算
 │
 ├── configs/                   # 配置文件
-│   ├── sft_config.yaml        # SFT配置
+│   ├── sft_config.yaml        # SFT配置（LoRA/QLoRA）
 │   ├── rl_config.yaml         # RL配置
 │   └── eval_config.yaml       # 评估配置
+│
+├── docs/                      # 文档目录
+│   ├── sft_training_guide.md  # SFT训练指南
+│   └── sft_evaluation.md      # SFT评估文档
 │
 ├── scripts/                   # 运行脚本
 │   ├── run_sft.sh             # SFT训练脚本
 │   ├── run_rl.sh              # RL训练脚本
 │   └── run_eval.sh            # 评估脚本
 │
-├── models/                    # 模型存储
-│   ├── sft_checkpoint/        # SFT检查点
-│   ├── rl_checkpoint/         # RL检查点
-│   └── baseline/              # baseline模型
+├── models/                    # 模型存储（训练后生成）
+│   ├── sft_checkpoint/        # SFT检查点（LoRA适配器）
+│   ├── sft_merged/            # 合并后的完整模型
+│   └── rl_checkpoint/         # RL检查点
 │
 ├── results/                   # 结果目录
 │   ├── logs/                  # 训练日志
 │   └── eval_results/          # 评估结果
 │
-├── requirements.txt           # 依赖文件
+├── pyproject.toml             # 项目依赖配置（uv）
 └── README.md                  # 本文件
 ```
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 环境准备
+
+本项目使用 [uv](https://docs.astral.sh/uv/) 进行依赖管理。
 
 ```bash
-pip install -r requirements.txt
+# 安装uv（如果未安装）
+pip install uv
+
+# PyTorch需要手动安装（根据CUDA版本选择）
+# CUDA 12.1:
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+# CUDA 11.8:
+pip install torch --index-url https://download.pytorch.org/whl/cu118
+
+# 安装其他依赖
+uv sync
 ```
 
 ### 2. 数据准备
 
 ```bash
-# 准备SFT数据
-python -m src.data_processing.dataset_builder --output data/processed
+# 生成SFT训练数据（从原始判决书转换）
+python src/data_processing/generate_sft_data.py
 
-# 准备RL环境数据
-python -m src.data_processing.evidence_split --output data/rl_env
+# 查看样例数据
+python src/data_processing/generate_sft_data.py --show-sample
 ```
 
 ### 3. SFT训练
 
 ```bash
+# 基本训练
+python src/sft/train_sft.py --config configs/sft_config.yaml
+
+# 从checkpoint恢复
+python src/sft/train_sft.py --resume models/sft_checkpoint/checkpoint-500
+
+# 训练后合并LoRA
+python src/sft/train_sft.py --merge --merge-output models/sft_merged
+
+# 或使用脚本
 bash scripts/run_sft.sh
 ```
+
+详细说明见 [SFT训练指南](docs/sft_training_guide.md)。
 
 ### 4. RL训练
 
@@ -86,32 +137,47 @@ bash scripts/run_rl.sh
 bash scripts/run_eval.sh
 ```
 
-## 核心模块说明
-
-### 数据处理 (`src/data_processing/`)
-
-- `cot_distill.py`: CoT思维链蒸馏
-- `evidence_split.py`: 证据拆分（隐藏-触发机制）
-- `dataset_builder.py`: 数据集构建
-
-### RL训练 (`src/rl/`)
-
-- `environment.py`: 法律多智能体环境
-- `reward.py`: 多维奖励函数
-- `grpo.py`: GRPO算法实现
-
-### 评估 (`src/evaluation/`)
-
-- `metrics.py`: 评估指标计算
-
 ## 技术配置
 
 | 项目 | 配置 |
 |-----|-----|
-| 基座模型 | Qwen-7B |
-| 微调方法 | QLoRA (4-bit量化) |
+| 基座模型 | Qwen3-8B |
+| 微调方法 | LoRA / QLoRA（可选） |
 | RL算法 | GRPO (组相对策略优化) |
-| GPU需求 | <24GB显存 |
+| 训练框架 | transformers + peft + trl |
+
+### 显存需求（Qwen3-8B）
+
+| 方案 | 显存需求 | 适用显卡 |
+|------|----------|----------|
+| 标准LoRA (FP16) | >=20GB | RTX 3090/4090 |
+| QLoRA (4-bit) | >=12GB | RTX 3060/4060/4070 |
+
+### LoRA/QLoRA切换
+
+在 `configs/sft_config.yaml` 中修改：
+
+```yaml
+# 标准LoRA（注释量化配置）
+model:
+  base_model: "Qwen/Qwen3-8B"
+  # 不使用量化
+
+# QLoRA（启用量化）
+model:
+  base_model: "Qwen/Qwen3-8B"
+  use_4bit: true
+  use_double_quant: true
+  quant_type: "nf4"
+```
+
+## 数据来源
+
+- **SimuCourt(1)**: 一审刑事案例，包含控辩审三方意见
+- **SimuCourt(2)**: 二审刑事案例，包含上诉辩护意见
+- **judge-data**: 结构化判决数据，高质量法官视角
+
+每个案例可生成多个角色的SFT数据点（检察官、辩护律师、法官）。
 
 ## 实验流程
 
