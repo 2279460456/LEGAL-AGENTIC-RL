@@ -23,6 +23,7 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, Ta
 from trl import SFTTrainer
 from datasets import Dataset
 import yaml
+from datetime import datetime
 
 
 @dataclass
@@ -296,6 +297,76 @@ def format_instruction(sample: Dict) -> str:
     return prompt
 
 
+def save_training_config(
+    output_dir: Path,
+    model_config: ModelConfig,
+    lora_config: LoRAConfig,
+    training_config: TrainingConfig,
+    data_config: DataConfig,
+    config_path: str,
+):
+    """
+    Save complete training configuration for later review.
+
+    Args:
+        output_dir: Output directory
+        model_config: Model configuration
+        lora_config: LoRA configuration
+        training_config: Training configuration
+        data_config: Data configuration
+        config_path: Original config file path
+    """
+    config_file = output_dir / "training_config.json"
+
+    config_dict = {
+        "training_info": {
+            "timestamp": datetime.now().isoformat(),
+            "config_source": config_path,
+        },
+        "model": {
+            "base_model": model_config.base_model,
+            "use_4bit": model_config.use_4bit,
+            "use_double_quant": model_config.use_double_quant,
+            "quant_type": model_config.quant_type,
+            "method": "QLoRA" if model_config.use_4bit else "LoRA",
+        },
+        "lora": {
+            "r": lora_config.r,
+            "lora_alpha": lora_config.lora_alpha,
+            "target_modules": lora_config.target_modules,
+            "lora_dropout": lora_config.lora_dropout,
+            "bias": lora_config.bias,
+        },
+        "training": {
+            "learning_rate": training_config.learning_rate,
+            "batch_size": training_config.batch_size,
+            "gradient_accumulation_steps": training_config.gradient_accumulation_steps,
+            "effective_batch_size": training_config.batch_size * training_config.gradient_accumulation_steps,
+            "num_epochs": training_config.num_epochs,
+            "max_seq_length": training_config.max_seq_length,
+            "warmup_ratio": training_config.warmup_ratio,
+            "weight_decay": training_config.weight_decay,
+            "logging_steps": training_config.logging_steps,
+            "save_steps": training_config.save_steps,
+            "save_total_limit": training_config.save_total_limit,
+        },
+        "data": {
+            "train_data_path": data_config.train_data_path,
+            "num_samples": data_config.num_samples,
+            "roles": data_config.roles,
+        },
+        "output": {
+            "output_dir": training_config.output_dir,
+            "run_name": training_config.run_name,
+        },
+    }
+
+    with open(config_file, "w", encoding="utf-8") as f:
+        json.dump(config_dict, f, ensure_ascii=False, indent=2)
+
+    print(f"Training config saved to: {config_file}")
+
+
 def train_sft(
     config_path: str = "configs/sft_config.yaml",
     resume_from_checkpoint: Optional[str] = None,
@@ -319,6 +390,20 @@ def train_sft(
     lora_config = create_lora_config(yaml_config)
     training_config = create_training_config(yaml_config)
     data_config = create_data_config(yaml_config)
+
+    # Create output directory first
+    output_dir = Path(training_config.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save training config for later review
+    save_training_config(
+        output_dir=output_dir,
+        model_config=model_config,
+        lora_config=lora_config,
+        training_config=training_config,
+        data_config=data_config,
+        config_path=config_path,
+    )
 
     # Load model
     model, tokenizer = load_model(model_config)
@@ -345,7 +430,8 @@ def train_sft(
         bf16=True,
         gradient_checkpointing=True,
         optim="paged_adamw_8bit",
-        report_to="none",
+        logging_dir=str(output_dir / "logs"),
+        report_to="tensorboard",
         remove_unused_columns=False,
     )
 
@@ -365,13 +451,29 @@ def train_sft(
 
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
+    # Save training history
+    print(f"\n{'='*60}")
+    print("Saving training logs...")
+    print(f"{'='*60}")
+
+    # Save trainer state
+    trainer_state = trainer.state
+    state_file = output_dir / "trainer_state.json"
+    with open(state_file, "w", encoding="utf-8") as f:
+        json.dump(trainer_state.__dict__, f, ensure_ascii=False, indent=2, default=str)
+    print(f"Trainer state saved to: {state_file}")
+
+    # Save log history
+    log_history = trainer.state.log_history
+    history_file = output_dir / "training_log.json"
+    with open(history_file, "w", encoding="utf-8") as f:
+        json.dump(log_history, f, ensure_ascii=False, indent=2)
+    print(f"Training log saved to: {history_file}")
+
     # Save
     print(f"\n{'='*60}")
     print("Saving model...")
     print(f"{'='*60}")
-
-    output_dir = Path(training_config.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Save LoRA adapters
     trainer.model.save_pretrained(str(output_dir))
