@@ -14,11 +14,6 @@ from typing import Dict, List, Optional, Tuple, Set
 from dataclasses import dataclass, field
 from enum import Enum
 
-# Import from evidence_split module (will be properly linked when package is set up)
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from ..data_processing.evidence_split import HiddenEvidence, EvidenceLevel
-
 
 class AgentAction(Enum):
     """Types of actions an agent can take"""
@@ -292,7 +287,11 @@ class EvidenceEnvironment:
                 break
 
         # Check for irrelevant query (no legal keywords)
-        legal_keywords = ["动机", "手段", "伤害", "自首", "赔偿", "事实", "证据"]
+        legal_keywords = [
+            "动机", "手段", "伤害", "自首", "赔偿", "事实", "证据",
+            "预谋", "工具", "伤口", "部位", "认罪", "报案", "谅解",
+            "刑期", "罪名", "法条", "故意", "重伤", "轻伤"
+        ]
         if not any(kw in query for kw in legal_keywords):
             reward -= 0.02  # Penalty for irrelevant query
 

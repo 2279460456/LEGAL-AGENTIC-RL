@@ -37,21 +37,12 @@ python src/sft/train_sft.py --config configs/sft_config.yaml
 python src/sft/train_sft.py --resume models/sft_checkpoint/checkpoint-500
 ```
 
-### 训练后合并LoRA
-
-```bash
-# 训练完成后将LoRA合并到基础模型
-python src/sft/train_sft.py --merge --merge-output models/sft_merged
-```
-
 ### 完整参数
 
 ```bash
 python src/sft/train_sft.py \
     --config configs/sft_config.yaml \
-    --resume models/sft_checkpoint/checkpoint-500 \
-    --merge \
-    --merge-output models/sft_merged
+    --resume models/sft_checkpoint/checkpoint-500
 ```
 
 ## LoRA/QLoRA切换
@@ -89,21 +80,29 @@ model:
 
 训练完成后：
 
-- `models/sft_checkpoint/` - LoRA适配器
-- `models/sft_merged/` - 合并后的完整模型（可选）
+- `models/sft_checkpoint/` - LoRA适配器权重
 
-## 推理测试
+**注意**：LoRA合并步骤已跳过。RL训练可直接使用LoRA模型。
+
+## 使用LoRA模型
+
+加载SFT后的模型（用于推理或RL训练）：
 
 ```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
+from src.rl.model_loader import load_sft_model
 
-# 加载LoRA模型
-base = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-8B")
-model = PeftModel.from_pretrained(base, "models/sft_checkpoint")
-tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B")
+# 加载带LoRA的模型
+model, tokenizer = load_sft_model(
+    base_model_path="Qwen/Qwen3-8B",
+    lora_path="models/sft_checkpoint"
+)
 
-# 或加载合并后的模型
-model = AutoModelForCausalLM.from_pretrained("models/sft_merged")
-tokenizer = AutoTokenizer.from_pretrained("models/sft_merged")
+# 直接用于推理或作为RL的policy model
+```
+
+## 测试模型
+
+```bash
+# 测试SFT模型生成能力
+python scripts/test_sft_model.py
 ```

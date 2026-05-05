@@ -19,13 +19,12 @@ fi
 # Check if data exists
 if [ ! -d "$DATA_DIR" ]; then
     echo "Warning: Data directory not found: $DATA_DIR"
-    echo "Please run data processing first."
+    echo "Please run data processing first:"
+    echo "  python src/data_processing/generate_sft_data.py"
 fi
 
 # Run SFT training
-python -m src.sft.train_sft \
-    --config "$CONFIG_FILE" \
-    --data "$DATA_DIR" \
-    --output "$OUTPUT_DIR"
+python src/sft/train_sft.py --config "$CONFIG_FILE"
 
 echo "SFT training completed."
+echo "Model saved to: $OUTPUT_DIR"

@@ -1,0 +1,69 @@
+# LLM Evidence Split Configuration
+# 用于GRPO数据集构建中的证据拆分
+
+# ============================================================================
+# 用户需要在此配置自己的LLM API
+# ============================================================================
+
+llm:
+  # 是否启用LLM拆分（设为true后需要配置api_key）
+  enabled: false
+
+  # 模型名称（根据您的API选择）
+  # 示例: "deepseek-chat", "qwen-plus", "gpt-4", "claude-3-opus"
+  model: "deepseek-chat"
+
+  # API密钥（请替换为您自己的key）
+  api_key: ""  # 或设置环境变量 DEEPSEEK_API_KEY
+
+  # API端点（根据您的API修改）
+  # DeepSeek: https://api.deepseek.com/v1/chat/completions
+  # OpenAI: https://api.openai.com/v1/chat/completions
+  # Qwen: https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation
+  api_endpoint: "https://api.deepseek.com/v1/chat/completions"
+
+  # 生成参数
+  temperature: 0.3  # 低温度保证稳定输出
+  max_tokens: 500
+
+  # 批处理配置
+  batch_size: 10  # 每批处理数量（减少API调用次数）
+  retry_times: 3  # 失败重试次数
+  retry_delay: 2  # 重试间隔（秒）
+
+# ============================================================================
+# 输出配置
+# ============================================================================
+
+output:
+  # 数据输出路径
+  train_output: "data/rl_env/train_cases.json"
+  test_output: "data/rl_env/test_cases.json"
+
+  # 训练/测试划分比例
+  train_ratio: 0.8
+
+# ============================================================================
+# 数据筛选配置
+# ============================================================================
+
+data:
+  # 输入数据路径
+  input_path: "data/raw/judge-data/all.json"
+
+  # 最大处理样本数（用于测试，设为null处理全部）
+  max_samples: null
+
+  # 最小Fact长度（过短的案件跳过）
+  min_fact_length: 50
+
+# ============================================================================
+# 日志配置
+# ============================================================================
+
+logging:
+  # 是否显示详细日志
+  verbose: true
+
+  # 日志输出路径
+  log_file: "logs/llm_split.log"

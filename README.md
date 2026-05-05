@@ -36,18 +36,20 @@ LEGAL-AGENTIC-RL/
 │   ├── data_processing/       # 数据处理模块
 │   │   ├── sft_templates.py   # SFT数据模板定义
 │   │   ├── generate_sft_data.py  # SFT数据生成脚本
-│   │   ├── cot_distill.py     # CoT思维链蒸馏
-│   │   ├── evidence_split.py  # 证据拆分（隐藏-触发）
-│   │   └── dataset_builder.py # 数据集构建
+│   │   ├── llm_evidence_splitter.py  # LLM证据拆分（罪名特异性）
+│   │   └── build_rl_data.py   # GRPO训练数据构建
 │   ├── sft/                   # SFT训练模块
 │   │   └── train_sft.py       # LoRA/QLoRA训练实现
 │   ├── rl/                    # RL训练模块
 │   │   ├── environment.py     # 法律多智能体环境
 │   │   ├── reward.py          # 多维奖励函数
 │   │   ├── grpo.py            # GRPO算法实现
-│   │   └── train_rl.py        # RL训练入口
+│   │   ├── train_rl.py        # RL训练入口
+│   │   └── model_loader.py    # SFT模型加载器
 │   └── evaluation/            # 评估模块
-│       └── metrics.py         # 评估指标计算
+│       ├── metrics.py         # 评估指标计算
+│       ├── sft_eval.py        # SFT评估脚本
+│       └── sft_metrics/       # SFT评估指标包
 │
 ├── configs/                   # 配置文件
 │   ├── sft_config.yaml        # SFT配置（LoRA/QLoRA）
@@ -55,6 +57,8 @@ LEGAL-AGENTIC-RL/
 │   └── eval_config.yaml       # 评估配置
 │
 ├── docs/                      # 文档目录
+│   ├── experiment_phases.md   # 实验阶段设计（SFT+RL）
+│   ├── crime_specific_evidence_design.md  # 罪名特异性证据层级
 │   ├── sft_training_guide.md  # SFT训练指南
 │   └── sft_evaluation.md      # SFT评估文档
 │

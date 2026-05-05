@@ -63,10 +63,12 @@ REQUIRED_STEPS = [
 ]
 
 
-# Legal keywords for query relevance
+# Legal keywords for query relevance (扩展覆盖)
 LEGAL_QUERY_KEYWORDS = [
     '动机', '手段', '伤害', '自首', '赔偿', '事实', '证据',
-    '预谋', '案发', '作案', '认罪', '供述', '情节'
+    '预谋', '案发', '作案', '认罪', '供述', '情节',
+    '工具', '伤口', '部位', '报案', '谅解', '刑期',
+    '罪名', '法条', '故意', '重伤', '轻伤', '投案'
 ]
 
 
