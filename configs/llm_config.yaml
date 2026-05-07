@@ -2,34 +2,35 @@
 # 用于GRPO数据集构建中的证据拆分
 
 # ============================================================================
-# 用户需要在此配置自己的LLM API
+# DeepSeek API 配置 (2026/05更新)
 # ============================================================================
 
 llm:
   # 是否启用LLM拆分（设为true后需要配置api_key）
-  enabled: false
+  enabled: true
 
-  # 模型名称（根据您的API选择）
-  # 示例: "deepseek-chat", "qwen-plus", "gpt-4", "claude-3-opus"
-  model: "deepseek-chat"
+  # DeepSeek模型名称
+  # - deepseek-v4-flash: 快速模型，非思考模式
+  # - deepseek-v4-pro: 高级模型，支持思考模式
+  # 注意: deepseek-chat将于2026/07/24弃用
+  model: "deepseek-v4-flash"
 
   # API密钥（请替换为您自己的key）
-  api_key: ""  # 或设置环境变量 DEEPSEEK_API_KEY
+  # 获取方式: https://platform.deepseek.com/
+  api_key: "sk-e227180049ad4ea09f8ce2184c546ea7"  # 或设置环境变量 DEEPSEEK_API_KEY
 
-  # API端点（根据您的API修改）
-  # DeepSeek: https://api.deepseek.com/v1/chat/completions
-  # OpenAI: https://api.openai.com/v1/chat/completions
-  # Qwen: https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation
-  api_endpoint: "https://api.deepseek.com/v1/chat/completions"
+  # DeepSeek API端点 (OpenAI兼容格式)
+  # 官方文档: https://api.deepseek.com/chat/completions
+  api_endpoint: "https://api.deepseek.com/chat/completions"
 
   # 生成参数
-  temperature: 0.3  # 低温度保证稳定输出
-  max_tokens: 500
+  temperature: 0.3  # 低温度保证稳定JSON输出
+  max_tokens: 800   # 增加token以适应JSON格式
 
   # 批处理配置
-  batch_size: 10  # 每批处理数量（减少API调用次数）
+  batch_size: 10  # 每批处理数量
   retry_times: 3  # 失败重试次数
-  retry_delay: 2  # 重试间隔（秒）
+  retry_delay: 2.0  # 重试间隔（秒）
 
 # ============================================================================
 # 输出配置

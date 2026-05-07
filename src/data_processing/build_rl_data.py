@@ -28,7 +28,7 @@ import re
 import argparse
 import yaml
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
 from datetime import datetime
 from tqdm import tqdm
 import random
@@ -44,10 +44,13 @@ from llm_evidence_splitter import (
     LLMConfig,
     EVIDENCE_ROLES_GENERIC,
     CRIME_SPECIFIC_EVIDENCE_LAYERS,
+    CRIME_CATEGORY_TRIGGERS,
+    CRIME_TO_CATEGORY_MAP,
     REQUIRED_ELEMENTS,
     get_required_elements,
     get_crime_specific_evidence_layers,
     get_evidence_triggers,
+    get_crime_category,
     EVIDENCE_SPLIT_PROMPT,
     build_dynamic_evidence_split_prompt
 )
@@ -342,15 +345,85 @@ def split_train_test(
     return train_cases, test_cases
 
 
+def load_existing_cases(output_dir: str) -> Tuple[Dict[str, Dict], Set[str]]:
+    """
+    加载已有的处理结果，用于断点续传
+
+    Args:
+        output_dir: 输出目录
+
+    Returns:
+        (已处理案例字典, 已处理case_id集合)
+    """
+    output_path = Path(output_dir)
+
+    existing_cases = {}
+    processed_ids = set()
+
+    # 尝试加载增量保存的临时文件
+    temp_file = output_path / "temp_processed_cases.json"
+    if temp_file.exists():
+        try:
+            with open(temp_file, 'r', encoding='utf-8') as f:
+                temp_data = json.load(f)
+                for case in temp_data:
+                    case_id = case.get("case_id", "")
+                    if case_id:
+                        existing_cases[case_id] = case
+                        processed_ids.add(case_id)
+            print(f"Loaded {len(processed_ids)} previously processed cases from temp file")
+        except Exception as e:
+            print(f"Warning: Failed to load temp file: {e}")
+
+    # 也尝试加载最终的训练和测试文件
+    for filename in ["train_cases.json", "test_cases.json"]:
+        file_path = output_path / filename
+        if file_path.exists():
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    for case in data:
+                        case_id = case.get("case_id", "")
+                        if case_id and case_id not in processed_ids:
+                            existing_cases[case_id] = case
+                            processed_ids.add(case_id)
+            except Exception as e:
+                print(f"Warning: Failed to load {filename}: {e}")
+
+    return existing_cases, processed_ids
+
+
+def save_temp_cases(output_dir: str, cases: List[Dict], batch_num: int = None):
+    """
+    增量保存临时处理结果
+
+    Args:
+        output_dir: 输出目录
+        cases: 当前已处理案例列表
+        batch_num: 当前批次号（用于日志）
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    temp_file = output_path / "temp_processed_cases.json"
+    with open(temp_file, 'w', encoding='utf-8') as f:
+        json.dump(cases, f, ensure_ascii=False, indent=2)
+
+    if batch_num:
+        print(f"  [Batch {batch_num}] Saved {len(cases)} cases to temp file")
+
+
 def build_rl_dataset(
     data_path: str,
     output_dir: str,
     splitter: LLMEvidenceSplitterBase,
     max_samples: Optional[int] = None,
-    train_ratio: float = 0.8
+    train_ratio: float = 0.8,
+    resume: bool = True,
+    save_interval: int = 50
 ) -> Dict:
     """
-    构建完整RL数据集
+    构建完整RL数据集（支持断点续传）
 
     Args:
         data_path: judge-data路径
@@ -358,6 +431,8 @@ def build_rl_dataset(
         splitter: LLM拆分器实例
         max_samples: 最大样本数（用于测试）
         train_ratio: 训练集比例
+        resume: 是否启用断点续传（默认True）
+        save_interval: 增量保存间隔（每处理多少条保存一次）
 
     Returns:
         统计信息
@@ -368,17 +443,34 @@ def build_rl_dataset(
     if max_samples:
         raw_data = raw_data[:max_samples]
 
+    # 断点续传：加载已处理数据
+    existing_cases = {}
+    processed_ids = set()
+    skipped_count = 0
+
+    if resume:
+        existing_cases, processed_ids = load_existing_cases(output_dir)
+
     # 构建RL数据
-    rl_cases = []
+    rl_cases = list(existing_cases.values())  # 从已有数据开始
     invalid_count = 0
 
     print(f"\n{'='*60}")
     print("Building RL dataset...")
     print(f"{'='*60}")
     print(f"Total cases: {len(raw_data)}")
+    print(f"Previously processed: {len(processed_ids)}")
     print(f"LLM enabled: {splitter.config.enabled}")
+    print(f"Resume mode: {resume}")
 
+    batch_num = 0
     for record in tqdm(raw_data, desc="Processing cases"):
+        # 检查是否已处理
+        case_id = record.get("CaseId", "")
+        if resume and case_id in processed_ids:
+            skipped_count += 1
+            continue
+
         case = build_single_rl_case(record, splitter)
 
         if case and validate_rl_case(case):
@@ -386,8 +478,14 @@ def build_rl_dataset(
         else:
             invalid_count += 1
 
+        # 增量保存
+        batch_num += 1
+        if batch_num % save_interval == 0:
+            save_temp_cases(output_dir, rl_cases, batch_num // save_interval)
+
     print(f"\nValid cases: {len(rl_cases)}")
     print(f"Invalid cases: {invalid_count}")
+    print(f"Skipped (already processed): {skipped_count}")
 
     # 划分训练/测试集
     train_cases, test_cases = split_train_test(rl_cases, train_ratio)
@@ -409,6 +507,12 @@ def build_rl_dataset(
         json.dump(test_cases, f, ensure_ascii=False, indent=2)
     print(f"Saved test cases to: {test_file}")
 
+    # 清理临时文件
+    temp_file = output_path / "temp_processed_cases.json"
+    if temp_file.exists():
+        temp_file.unlink()
+        print(f"Cleaned up temp file: {temp_file}")
+
     # 保存统计信息
     stats = {
         "timestamp": datetime.now().isoformat(),
@@ -416,11 +520,13 @@ def build_rl_dataset(
         "total_raw": len(raw_data),
         "valid_cases": len(rl_cases),
         "invalid_cases": invalid_count,
+        "skipped_cases": skipped_count,
         "train_cases": len(train_cases),
         "test_cases": len(test_cases),
         "llm_enabled": splitter.config.enabled,
         "llm_model": splitter.config.model if splitter.config.enabled else None,
-        "train_ratio": train_ratio
+        "train_ratio": train_ratio,
+        "resume_mode": resume
     }
 
     stats_file = output_path / "build_stats.json"
@@ -469,6 +575,17 @@ def main():
         default=0.8,
         help="Training set ratio"
     )
+    parser.add_argument(
+        "--no_resume",
+        action="store_true",
+        help="Disable resume mode (start from scratch)"
+    )
+    parser.add_argument(
+        "--save_interval",
+        type=int,
+        default=50,
+        help="Save interval for incremental saving (default: 50)"
+    )
 
     args = parser.parse_args()
 
@@ -482,13 +599,15 @@ def main():
     # 创建拆分器实例
     splitter = DefaultLLMSplitter(llm_config)
 
-    # 构建数据集
+    # 构建数据集（默认启用断点续传）
     stats = build_rl_dataset(
         data_path=args.data,
         output_dir=args.output,
         splitter=splitter,
         max_samples=args.max_samples,
-        train_ratio=args.train_ratio
+        train_ratio=args.train_ratio,
+        resume=not args.no_resume,  # 默认启用断点续传
+        save_interval=args.save_interval
     )
 
     # 打印摘要
@@ -498,6 +617,8 @@ def main():
     print(f"Valid cases: {stats['valid_cases']}")
     print(f"Train cases: {stats['train_cases']}")
     print(f"Test cases: {stats['test_cases']}")
+    if stats.get('skipped_cases', 0) > 0:
+        print(f"Skipped (resumed): {stats['skipped_cases']}")
     print(f"\nDone!")
 
 

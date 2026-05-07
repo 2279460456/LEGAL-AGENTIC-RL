@@ -32,11 +32,11 @@ from abc import ABC, abstractmethod
 class LLMConfig:
     """LLM配置"""
     enabled: bool = False
-    model: str = "deepseek-chat"
+    model: str = "deepseek-v4-flash"  # DeepSeek推荐模型
     api_key: str = ""
-    api_endpoint: str = "https://api.deepseek.com/v1/chat/completions"
+    api_endpoint: str = "https://api.deepseek.com/chat/completions"  # OpenAI兼容格式
     temperature: float = 0.3
-    max_tokens: int = 500
+    max_tokens: int = 800
     batch_size: int = 10
     retry_times: int = 3
     retry_delay: float = 2.0
@@ -232,31 +232,357 @@ CRIME_SPECIFIC_EVIDENCE_LAYERS = {
     }
 }
 
-# 保留原有的通用触发词（作为默认fallback）
+# ============================================================================
+# 罪名分类触发词体系（扩展覆盖100+罪名）
+# ============================================================================
+
+# 罪名大类触发词配置（按犯罪类型分类）
+CRIME_CATEGORY_TRIGGERS = {
+    # 人身伤害类（故意伤害、故意杀人等）
+    "人身伤害类": {
+        "subjective": [
+            "作案动机", "动机", "为什么", "原因", "目的",
+            "事前准备", "预谋", "策划", "蓄意", "谋划",
+            "购买工具", "工具来源", "报复", "泄愤", "怨恨",
+            "故意", "明知", "主观", "是否有预谋"
+        ],
+        "objective": [
+            "作案手段", "手段", "方式", "怎么做的", "怎么实施", "具体行为",
+            "伤害部位", "伤口位置", "伤口", "打击部位", "伤情",
+            "打击力度", "刺了几刀", "连续", "多次", "几下",
+            "伤害程度", "重伤", "轻伤", "伤情鉴定",
+            "持刀", "持械", "使用工具", "打击", "捅", "刺", "砍"
+        ],
+        "sentencing": [
+            "案后表现", "自首", "投案", "主动投案", "报案情况",
+            "拨打110", "拨打120", "原地等待",
+            "赔偿", "赔偿情况", "医疗费", "损失赔偿", "和解",
+            "认罪态度", "悔罪", "坦白", "如实供述", "认罪认罚",
+            "谅解", "取得谅解", "被害人态度", "积极救治"
+        ]
+    },
+
+    # 财产犯罪类（诈骗、盗窃、抢劫等）
+    "财产犯罪类": {
+        "subjective": [
+            "作案动机", "动机", "获利目的", "非法占有",
+            "预谋", "策划", "事前准备", "故意", "明知",
+            "为什么", "目的", "主观", "诈骗故意", "盗窃故意"
+        ],
+        "objective": [
+            "作案手段", "手段", "方式", "怎么做的", "具体行为",
+            "涉案金额", "金额", "数额", "骗取", "盗窃", "抢劫",
+            "合同", "转账", "发票", "虚构事实", "虚构内容",
+            "入户", "公共场所", "多次盗窃", "被害人数量",
+            "欺骗方式", "诈骗手段", "盗窃手段", "抢劫手段",
+            "秘密窃取", "暴力胁迫", "抢夺", "敲诈勒索"
+        ],
+        "sentencing": [
+            "案后表现", "自首", "投案", "主动投案",
+            "退赃", "退赔", "返还财物", "赔偿损失",
+            "认罪态度", "悔罪", "坦白", "如实供述", "认罪认罚",
+            "累犯", "前科", "谅解", "取得谅解",
+            "被害人态度", "退赃情况"
+        ]
+    },
+
+    # 毒品犯罪类（贩卖、运输、持有毒品等）
+    "毒品犯罪类": {
+        "subjective": [
+            "明知", "贩毒动机", "获利目的", "预谋",
+            "故意", "主观", "为什么", "目的",
+            "是否明知是毒品", "贩毒故意"
+        ],
+        "objective": [
+            "毒品", "克数", "纯度", "甲基苯丙胺", "冰毒",
+            "贩卖", "运输", "持有", "制造毒品",
+            "毒品数量", "毒品类型", "海洛因", "鸦片",
+            "贩卖毒品", "运输毒品", "持有毒品",
+            "交易地点", "交易方式", "包装"
+        ],
+        "sentencing": [
+            "案后表现", "自首", "投案", "主动投案",
+            "认罪态度", "悔罪", "坦白", "如实供述", "认罪认罚",
+            "配合调查", "立功", "检举揭发", "特情介入",
+            "控制下交付", "诱惑侦查"
+        ]
+    },
+
+    # 职务犯罪类（贪污、受贿、挪用公款等）
+    "职务犯罪类": {
+        "subjective": [
+            "职务便利", "贪污故意", "受贿故意", "挪用故意",
+            "明知", "故意", "主观", "为什么", "目的",
+            "预谋", "策划", "事前准备", "利用职权"
+        ],
+        "objective": [
+            "贪污", "受贿", "挪用", "职权", "公款",
+            "账目", "侵吞", "窃取", "骗取",
+            "索贿", "收受贿赂", "权钱交易",
+            "挪用公款", "归个人使用", "超过三个月",
+            "职务便利", "利用职务", "管理权限"
+        ],
+        "sentencing": [
+            "案后表现", "自首", "投案", "主动投案",
+            "退赃", "退赔", "上缴违纪所得",
+            "认罪态度", "悔罪", "坦白", "如实供述", "认罪认罚",
+            "立功", "配合调查", "检举揭发"
+        ]
+    },
+
+    # 交通犯罪类（危险驾驶、交通肇事等）
+    "交通犯罪类": {
+        "subjective": [
+            "明知醉酒", "主观过错", "是否饮酒", "是否明知",
+            "故意", "过失", "主观", "为什么",
+            "违反交通规则", "明知违法"
+        ],
+        "objective": [
+            "酒精含量", "血液酒精", "血液", "驾驶行为",
+            "事故责任", "醉酒驾驶", "酒后驾驶",
+            "伤亡情况", "财产损失", "事故后果",
+            "驾驶路段", "驾驶时间", "车辆类型",
+            "交通事故认定", "责任划分"
+        ],
+        "sentencing": [
+            "案后表现", "自首", "投案", "主动投案",
+            "赔偿", "赔偿情况", "医疗费", "损失赔偿",
+            "谅解", "取得谅解", "被害人态度",
+            "认罪态度", "悔罪", "坦白", "如实供述", "认罪认罚"
+        ]
+    },
+
+    # 性犯罪类（强奸、猥亵等）
+    "性犯罪类": {
+        "subjective": [
+            "强行", "违背意志", "明知幼女", "强制故意",
+            "胁迫", "故意", "主观", "明知",
+            "强奸故意", "猥亵故意", "利用职权"
+        ],
+        "objective": [
+            "强制", "猥亵", "强奸手段", "暴力",
+            "胁迫", "幼女", "违背意愿",
+            "强行发生性关系", "猥亵行为",
+            "被害人反抗", "不敢反抗", "不能反抗",
+            "作案地点", "作案时间"
+        ],
+        "sentencing": [
+            "案后表现", "自首", "投案", "主动投案",
+            "赔偿", "谅解", "取得谅解",
+            "认罪态度", "悔罪", "坦白", "如实供述", "认罪认罚",
+            "被害人态度"
+        ]
+    },
+
+    # 网络犯罪类（非法侵入信息系统、数据窃取等）
+    "网络犯罪类": {
+        "subjective": [
+            "侵入故意", "控制故意", "获取数据故意",
+            "明知", "故意", "主观", "为什么", "目的",
+            "预谋", "黑客故意", "窃取故意"
+        ],
+        "objective": [
+            "数据", "信息系统", "侵入", "控制",
+            "黑客", "窃取数据", "网络攻击",
+            "计算机系统", "服务器", "数据库",
+            "非法获取", "非法控制", "破坏系统",
+            "传播病毒", "木马程序", "网络入侵"
+        ],
+        "sentencing": [
+            "案后表现", "自首", "投案", "主动投案",
+            "认罪态度", "悔罪", "坦白", "如实供述", "认罪认罚",
+            "退赃", "配合调查", "技术协助"
+        ]
+    },
+
+    # 妨害社会管理类（介绍卖淫、赌博、传播淫秽物品等）
+    "妨害社会管理类": {
+        "subjective": [
+            "明知", "妨害故意", "获利目的", "组织故意",
+            "故意", "主观", "为什么", "目的",
+            "预谋", "策划"
+        ],
+        "objective": [
+            "招嫖卡片", "卖淫", "赌博", "传播淫秽",
+            "组织卖淫", "介绍卖淫", "联系方式",
+            "招嫖电话", "招嫖信息", "卖淫嫖娼",
+            "赌博方式", "赌资", "淫秽物品",
+            "传播范围", "传播数量", "点击量"
+        ],
+        "sentencing": [
+            "案后表现", "自首", "投案", "主动投案",
+            "认罪态度", "悔罪", "坦白", "如实供述", "认罪认罚",
+            "配合调查", "退赃", "违法所得"
+        ]
+    }
+}
+
+# 罪名到大类映射字典
+CRIME_TO_CATEGORY_MAP = {
+    # 人身伤害类
+    "故意伤害": "人身伤害类",
+    "故意杀人": "人身伤害类",
+    "过失致人死亡": "人身伤害类",
+    "过失致人重伤": "人身伤害类",
+    "聚众斗殴": "人身伤害类",
+    "寻衅滋事": "人身伤害类",  # 也可归为妨害社会管理类
+
+    # 财产犯罪类
+    "诈骗": "财产犯罪类",
+    "盗窃": "财产犯罪类",
+    "抢劫": "财产犯罪类",
+    "抢夺": "财产犯罪类",
+    "敲诈勒索": "财产犯罪类",
+    "侵占": "财产犯罪类",
+    "职务侵占": "财产犯罪类",
+    "挪用资金": "财产犯罪类",
+    "信用卡诈骗": "财产犯罪类",
+    "合同诈骗": "财产犯罪类",
+    "集资诈骗": "财产犯罪类",
+    "非法吸收公众存款": "财产犯罪类",
+    "组织领导传销": "财产犯罪类",
+    "传销": "财产犯罪类",
+    "洗钱": "财产犯罪类",
+    "贷款诈骗": "财产犯罪类",
+    "票据诈骗": "财产犯罪类",
+    "保险诈骗": "财产犯罪类",
+    "骗取贷款": "财产犯罪类",
+
+    # 毒品犯罪类
+    "贩卖毒品": "毒品犯罪类",
+    "运输毒品": "毒品犯罪类",
+    "制造毒品": "毒品犯罪类",
+    "持有毒品": "毒品犯罪类",
+    "非法持有毒品": "毒品犯罪类",
+    "容留他人吸毒": "毒品犯罪类",
+    "引诱教唆欺骗他人吸毒": "毒品犯罪类",
+    "非法提供麻醉药品": "毒品犯罪类",
+
+    # 职务犯罪类
+    "贪污": "职务犯罪类",
+    "受贿": "职务犯罪类",
+    "挪用公款": "职务犯罪类",
+    "行贿": "职务犯罪类",
+    "单位受贿": "职务犯罪类",
+    "单位行贿": "职务犯罪类",
+    "滥用职权": "职务犯罪类",
+    "玩忽职守": "职务犯罪类",
+    "徇私枉法": "职务犯罪类",
+    "巨额财产来源不明": "职务犯罪类",
+
+    # 交通犯罪类
+    "危险驾驶": "交通犯罪类",
+    "交通肇事": "交通犯罪类",
+    "重大责任事故": "交通犯罪类",
+
+    # 性犯罪类
+    "强奸": "性犯罪类",
+    "猥亵": "性犯罪类",
+    "强制猥亵": "性犯罪类",
+    "猥亵儿童": "性犯罪类",
+    "强制猥亵侮辱": "性犯罪类",
+
+    # 网络犯罪类
+    "非法侵入计算机信息系统": "网络犯罪类",
+    "非法获取计算机信息系统数据": "网络犯罪类",
+    "破坏计算机信息系统": "网络犯罪类",
+    "非法控制计算机信息系统": "网络犯罪类",
+    "帮助信息网络犯罪活动": "网络犯罪类",
+
+    # 妨害社会管理类
+    "介绍卖淫": "妨害社会管理类",
+    "容留卖淫": "妨害社会管理类",
+    "组织卖淫": "妨害社会管理类",
+    "强迫卖淫": "妨害社会管理类",
+    "协助组织卖淫": "妨害社会管理类",
+    "赌博": "妨害社会管理类",
+    "开设赌场": "妨害社会管理类",
+    "传播淫秽物品": "妨害社会管理类",
+    "制作淫秽物品": "妨害社会管理类",
+    "贩卖淫秽物品": "妨害社会管理类",
+    "聚众扰乱社会秩序": "妨害社会管理类",
+    "妨害公务": "妨害社会管理类",
+    "虚假诉讼": "妨害社会管理类"
+}
+
+
+def get_crime_category(crime_type: str) -> str:
+    """
+    根据罪名获取犯罪大类
+
+    Args:
+        crime_type: 罪名（如"诈骗罪"、"故意伤害罪"等）
+
+    Returns:
+        犯罪大类名称，如"财产犯罪类"、"人身伤害类"等
+    """
+    # 清理罪名格式（去除"罪"字）
+    crime_key = crime_type.replace("罪", "").strip()
+
+    # 查找映射
+    for key in CRIME_TO_CATEGORY_MAP:
+        if key in crime_type or crime_key in key:
+            return CRIME_TO_CATEGORY_MAP[key]
+
+    # 未找到映射时，根据关键词推断
+    if any(kw in crime_type for kw in ["伤害", "杀人", "殴打", "斗殴", "致死", "重伤", "轻伤"]):
+        return "人身伤害类"
+    elif any(kw in crime_type for kw in ["诈骗", "盗窃", "抢劫", "抢夺", "侵占", "敲诈", "勒索", "洗钱", "传销"]):
+        return "财产犯罪类"
+    elif any(kw in crime_type for kw in ["毒品", "贩毒", "运毒", "制毒", "持有毒品", "吸毒"]):
+        return "毒品犯罪类"
+    elif any(kw in crime_type for kw in ["贪污", "受贿", "挪用公款", "行贿", "职权", "渎职", "职务"]):
+        return "职务犯罪类"
+    elif any(kw in crime_type for kw in ["交通", "驾驶", "肇事", "醉酒", "酒后驾驶"]):
+        return "交通犯罪类"
+    elif any(kw in crime_type for kw in ["强奸", "猥亵", "性侵", "幼女"]):
+        return "性犯罪类"
+    elif any(kw in crime_type for kw in ["计算机", "信息系统", "网络", "数据", "黑客"]):
+        return "网络犯罪类"
+    elif any(kw in crime_type for kw in ["卖淫", "嫖娼", "赌博", "淫秽", "妨害", "扰乱"]):
+        return "妨害社会管理类"
+
+    # 无法分类时返回空字符串
+    return ""
+
+
+# 保留原有的通用触发词（作为最终fallback，扩展覆盖）
 TRIGGER_KEYWORDS_GENERIC = {
     "subjective": [
         "作案动机", "动机", "为什么", "原因", "目的",
         "事前准备", "预谋", "策划", "蓄意", "谋划",
         "作案工具来源", "购买行为", "购买工具", "工具来源",
-        "是否有预谋", "故意", "明知", "主观"
+        "是否有预谋", "故意", "明知", "主观",
+        "获利目的", "非法占有", "报复", "泄愤"
     ],
     "objective": [
         "作案手段", "手段", "方式", "怎么做的", "怎么实施", "具体行为",
         "伤害部位", "伤口位置", "伤口", "打击部位", "伤情",
         "打击力度", "刺了几刀", "连续", "多次", "几下",
         "伤害程度", "重伤", "轻伤", "伤情鉴定",
-        "涉案金额", "金额", "数额", "骗取", "盗窃"
+        "涉案金额", "金额", "数额", "骗取", "盗窃",
+        "持刀", "持械", "使用工具", "合同", "转账", "发票",
+        "虚构事实", "毒品", "克数", "纯度", "贩卖",
+        "职务便利", "贪污", "受贿", "挪用", "公款",
+        "酒精含量", "血液", "驾驶行为", "事故责任",
+        "强制", "猥亵", "违背意志", "侵入", "信息系统",
+        "招嫖卡片", "卖淫", "赌博", "传播淫秽"
     ],
     "sentencing": [
-        "案后表现", "自首", "投案", "主动投案", "报案情况", "拨打110", "拨打120",
+        "案后表现", "自首", "投案", "主动投案", "报案情况",
+        "拨打110", "拨打120", "原地等待",
         "赔偿", "赔偿情况", "医疗费", "损失赔偿", "和解",
         "认罪态度", "悔罪", "坦白", "如实供述", "认罪认罚",
-        "谅解", "取得谅解", "被害人态度", "退赃"
+        "谅解", "取得谅解", "被害人态度", "退赃",
+        "累犯", "前科", "立功", "配合调查"
     ]
 }
 
 
 # 保留原有的旧定义（向后兼容）
+TRIGGER_KEYWORDS = TRIGGER_KEYWORDS_GENERIC
+
+# 向后兼容定义
 EVIDENCE_ROLES = EVIDENCE_ROLES_GENERIC
 
 # 必经要素清单模板
@@ -553,15 +879,15 @@ class LLMEvidenceSplitterBase(ABC):
             "public_info": public_info,
             "subjective_evidence": {
                 "content": subjective_match,
-                "role": EVIDENCE_ROLES["subjective"]["legal_role"]
+                "role": EVIDENCE_ROLES["subjective"]["legal_role_generic"]
             },
             "objective_evidence": {
                 "content": objective_match,
-                "role": EVIDENCE_ROLES["objective"]["legal_role"]
+                "role": EVIDENCE_ROLES["objective"]["legal_role_generic"]
             },
             "sentencing_evidence": {
                 "content": sentencing_match,
-                "role": EVIDENCE_ROLES["sentencing"]["legal_role"]
+                "role": EVIDENCE_ROLES["sentencing"]["legal_role_generic"]
             }
         }
 
@@ -623,6 +949,11 @@ class DefaultLLMSplitter(LLMEvidenceSplitterBase):
         """
         import requests
         import time
+        import urllib3
+        from urllib3.util.ssl_ import create_urllib3_context
+
+        # 完全禁用SSL验证（仅用于开发环境）
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
@@ -639,11 +970,13 @@ class DefaultLLMSplitter(LLMEvidenceSplitterBase):
         # 重试机制
         for attempt in range(self.config.retry_times):
             try:
+                # 使用verify=False跳过SSL验证
                 response = requests.post(
                     self.config.api_endpoint,
                     headers=headers,
                     json=payload,
-                    timeout=30
+                    timeout=60,
+                    verify=False  # 完全跳过SSL验证
                 )
 
                 if response.status_code == 200:
@@ -656,7 +989,7 @@ class DefaultLLMSplitter(LLMEvidenceSplitterBase):
                     continue
 
                 else:
-                    print(f"API error: {response.status_code}")
+                    print(f"API error: {response.status_code} - {response.text[:100]}")
                     if attempt < self.config.retry_times - 1:
                         time.sleep(self.config.retry_delay)
                         continue
@@ -715,17 +1048,40 @@ def get_evidence_triggers(crime_type: str) -> Dict[str, List[str]]:
     """
     根据罪名获取证据触发词列表
 
+    三层fallback优先级：
+    1. 罪名特异性配置（CRIME_SPECIFIC_EVIDENCE_LAYERS）
+    2. 罪名大类配置（CRIME_CATEGORY_TRIGGERS）
+    3. 通用配置（TRIGGER_KEYWORDS_GENERIC）
+
     Args:
         crime_type: 罪名
 
     Returns:
         三层证据的触发词字典
     """
-    layers = get_crime_specific_evidence_layers(crime_type)
+    # 优先级1：查找罪名特异性配置
+    for key in CRIME_SPECIFIC_EVIDENCE_LAYERS:
+        if key in crime_type:
+            return {
+                "subjective": CRIME_SPECIFIC_EVIDENCE_LAYERS[key]["subjective"]["triggers"],
+                "objective": CRIME_SPECIFIC_EVIDENCE_LAYERS[key]["objective"]["triggers"],
+                "sentencing": CRIME_SPECIFIC_EVIDENCE_LAYERS[key]["sentencing"]["triggers"]
+            }
+
+    # 优先级2：查找罪名大类配置
+    category = get_crime_category(crime_type)
+    if category and category in CRIME_CATEGORY_TRIGGERS:
+        return {
+            "subjective": CRIME_CATEGORY_TRIGGERS[category]["subjective"],
+            "objective": CRIME_CATEGORY_TRIGGERS[category]["objective"],
+            "sentencing": CRIME_CATEGORY_TRIGGERS[category]["sentencing"]
+        }
+
+    # 优先级3：返回通用配置
     return {
-        "subjective": layers["subjective"]["triggers"],
-        "objective": layers["objective"]["triggers"],
-        "sentencing": layers["sentencing"]["triggers"]
+        "subjective": TRIGGER_KEYWORDS_GENERIC["subjective"],
+        "objective": TRIGGER_KEYWORDS_GENERIC["objective"],
+        "sentencing": TRIGGER_KEYWORDS_GENERIC["sentencing"]
     }
 
 
