@@ -78,25 +78,53 @@ def load_sft_model(
 
     # 加载LoRA适配器
     print("\nLoading LoRA adapters...")
-    model = PeftModel.from_pretrained(
-        base_model,
-        lora_path,
-        device_map=device_map,
-        is_trainable=enable_training  # 关键：设置是否可训练
-    )
 
-    # 如果启用训练模式，需要额外的准备
-    if enable_training and use_quantization:
-        from peft import prepare_model_for_kbit_training
-        model = prepare_model_for_kbit_training(model)
+    if enable_training:
+        # 训练模式：需要先准备基座模型，再加载LoRA
+        if use_quantization:
+            from peft import prepare_model_for_kbit_training
+            print("Preparing model for k-bit training...")
+            base_model = prepare_model_for_kbit_training(base_model)
+
+        # 加载LoRA，设置为可训练
+        model = PeftModel.from_pretrained(
+            base_model,
+            lora_path,
+            is_trainable=True  # 显式设置为可训练
+        )
+
+        # 强制解冻LoRA参数（某些peft版本需要手动解冻）
+        print("Unfreezing LoRA parameters...")
+        for name, param in model.named_parameters():
+            if 'lora' in name.lower():
+                param.requires_grad = True
+
+        # 尝试调用enable_adapter_layers（如果存在）
+        if hasattr(model, 'enable_adapter_layers'):
+            model.enable_adapter_layers()
+    else:
+        # 推理模式
+        model = PeftModel.from_pretrained(
+            base_model,
+            lora_path,
+            is_trainable=False
+        )
+
+    # 验证可训练参数
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
 
     print("\nModel loaded successfully!")
     print(f"Model device: {next(model.parameters()).device}")
+    print(f"Trainable params: {trainable_params} / {total_params} ({100*trainable_params/total_params:.4f}%)")
 
-    # 打印可训练参数数量
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"Trainable params: {trainable_params} / {total_params} ({100*trainable_params/total_params:.2f}%)")
+    if enable_training and trainable_params == 0:
+        raise RuntimeError(
+            "训练模式启用但可训练参数为0！这可能是peft版本问题。\n"
+            "请尝试:\n"
+            "  1. pip install peft>=0.5.0\n"
+            "  2. 或手动设置: model.enable_adapter_layers()"
+        )
 
     return model, tokenizer
 
