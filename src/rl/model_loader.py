@@ -85,10 +85,6 @@ def load_sft_model(
             from peft import prepare_model_for_kbit_training
             print("Preparing model for k-bit training...")
             base_model = prepare_model_for_kbit_training(base_model)
-            # 禁用gradient checkpointing以加速生成（24GB显存足够）
-            if hasattr(base_model, 'gradient_checkpointing'):
-                base_model.gradient_checkpointing_disable()
-                print("Gradient checkpointing disabled for faster generation")
 
         # 加载LoRA，设置为可训练
         model = PeftModel.from_pretrained(
@@ -96,6 +92,15 @@ def load_sft_model(
             lora_path,
             is_trainable=True  # 显式设置为可训练
         )
+
+        # 禁用gradient checkpointing以加速生成（24GB显存足够）
+        # 必须在加载LoRA之后禁用，因为prepare_model_for_kbit_training会启用
+        if hasattr(model, 'gradient_checkpointing_disable'):
+            model.gradient_checkpointing_disable()
+            print("Gradient checkpointing disabled for faster generation")
+        elif hasattr(model, 'base_model') and hasattr(model.base_model, 'gradient_checkpointing_disable'):
+            model.base_model.gradient_checkpointing_disable()
+            print("Gradient checkpointing disabled (via base_model)")
 
         # 强制解冻LoRA参数（某些peft版本需要手动解冻）
         print("Unfreezing LoRA parameters...")
