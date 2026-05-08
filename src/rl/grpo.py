@@ -197,9 +197,11 @@ class GRPOTrainer:
         """
         trajectories = []
 
-        for _ in range(num_trajectories):
+        for i in range(num_trajectories):
+            print(f"  [Trajectory {i+1}/{num_trajectories}] Generating...")
             traj = self._sample_trajectory(case_data)
             trajectories.append(traj)
+            print(f"  [Trajectory {i+1}/{num_trajectories}] Reward={traj.total_reward:.4f}")
 
         return trajectories
 
@@ -222,7 +224,13 @@ class GRPOTrainer:
         log_probs = []
         step_rewards = []
 
+        traj_round = 0
         while not self.environment.is_terminal():
+            traj_round += 1
+            # 进度显示（每轮）
+            if traj_round <= 2 or traj_round % 5 == 0:
+                print(f"    [Trajectory] Round {traj_round}/{self.environment.max_rounds}")
+
             # Sample action from policy (使用实际模型)
             action, action_text, log_prob = self._sample_action(state)
 
@@ -238,6 +246,8 @@ class GRPOTrainer:
 
             # Update state
             state = result.state
+
+        print(f"    [Trajectory] Completed in {traj_round} rounds, action={actions[-1].get('type', 'unknown')}")
 
         # Compute final reward
         final_reward = self.environment.get_final_reward()
@@ -277,7 +287,8 @@ class GRPOTrainer:
             max_length=2048
         ).to(self.policy_model.device)
 
-        # Generate with sampling
+        # Generate with sampling - 优化生成参数
+        print("      [Generating]...", end="", flush=True)
         with torch.no_grad():
             outputs = self.policy_model.generate(
                 **inputs,
@@ -286,9 +297,11 @@ class GRPOTrainer:
                 temperature=self.config.temperature,
                 top_p=self.config.top_p,
                 pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+                use_cache=True,  # 启用KV cache加速生成
                 return_dict_in_generate=True,
                 output_scores=True
             )
+        print(" done")
 
         # Decode generated text
         generated_ids = outputs.sequences[0][inputs.input_ids.shape[1]:]
@@ -373,7 +386,16 @@ class GRPOTrainer:
         current_round = state.get('current_round', 0)
         max_rounds = state.get('max_rounds', 10)
 
-        revealed_text = "\n".join(revealed) if revealed else "暂无"
+        # 限制revealed文本长度，避免prompt过长
+        revealed_text = "\n".join(revealed[-3:]) if revealed else "暂无"  # 只显示最近3条
+
+        # 根据轮次调整提示，让模型在后期更倾向于判决
+        remaining_rounds = max_rounds - current_round
+        urgency_hint = ""
+        if remaining_rounds <= 2:
+            urgency_hint = "\n【重要提示】剩余轮次较少，如果已有基本证据，请尽快给出判决！"
+        elif remaining_rounds <= 5:
+            urgency_hint = "\n【提示】时间有限，请权衡是否需要继续提问或现在判决。"
 
         prompt = f"""你是一位资深法官，正在审理案件。你的任务是：
 1. 分析案情和证据
@@ -385,13 +407,14 @@ class GRPOTrainer:
 已获取证据：
 {revealed_text}
 
-当前轮次：第{current_round}轮（最多{max_rounds}轮）
+当前轮次：第{current_round}轮（剩余{remaining_rounds}轮）
+{urgency_hint}
 
 请决定下一步行动：
 - 如果需要更多证据，请提问（格式：提问：...）
-- 如果证据充分，请判决（格式：判决：罪名...刑期...）
+- 如果证据充分，请判决（格式：判决：罪名：XXX，刑期：XXX）
 
-请直接输出你的决定："""
+请直接输出："""
 
         return prompt
 

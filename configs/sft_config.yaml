@@ -6,9 +6,9 @@
 # ============================================================================
 model:
   base_model: "Qwen/Qwen3-8B"
-  # use_4bit: true  # 4-bit quantization for memory efficiency
-  # use_double_quant: true
-  # quant_type: "nf4"
+  use_4bit: true  # 4-bit quantization for memory efficiency
+  use_double_quant: true
+  quant_type: "nf4"
 
 # LoRA Configuration
 lora:

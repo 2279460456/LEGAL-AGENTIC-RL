@@ -4,12 +4,13 @@
 
 # GRPO Configuration
 grpo:
-  group_size: 8  # [调整] 从4增加到8，利用更多显存生成更多轨迹
+  group_size: 4  # [调整] 从8减少到4，减少每个episode的模型调用次数
   temperature: 1.0  # Sampling temperature for diversity
   top_p: 0.9  # Top-p sampling
   max_turns: 10  # Maximum conversation turns per episode
   early_stop_patience: 5  # Stop if no improvement for N epochs
-  max_new_tokens: 256  # [新增] 每次生成的最大token数
+  max_new_tokens: 128  # [调整] 从256减少到128，加快生成速度
+  do_sample: true
 
 # Environment Configuration
 environment:

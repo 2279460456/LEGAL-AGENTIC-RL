@@ -144,11 +144,18 @@ def train_grpo(
         case_idx = episode % len(train_cases)
         case_data = train_cases[case_idx]
 
+        print(f"\n{'='*40}")
+        print(f"Episode {episode}/{num_episodes}")
+        print(f"Case: {case_data.get('case_id', case_idx)}")
+        print(f"{'='*40}")
+
         # Training step
         try:
             loss, rewards = trainer.train_step(case_data)
         except Exception as e:
             print(f"Episode {episode} failed: {e}")
+            import traceback
+            traceback.print_exc()
             continue
 
         # Logging
@@ -156,7 +163,8 @@ def train_grpo(
             stats = trainer.get_training_stats()
             mean_reward = np.mean(rewards) if rewards else 0.0
             loss_val = loss.item() if hasattr(loss, 'item') else float(loss)
-            print(f"Episode {episode}: Loss={loss_val:.4f}, Mean Reward={mean_reward:.4f}")
+            print(f"\n[Summary] Episode {episode}: Loss={loss_val:.4f}, Mean Reward={mean_reward:.4f}")
+            print(f"[Stats] Reward std: {np.std(rewards):.4f}")
 
         # Save checkpoint
         if episode % save_interval == 0 and episode > resume_episode:
