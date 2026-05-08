@@ -252,18 +252,21 @@ class GRPOTrainer:
             step_rewards=step_rewards
         )
 
-    def _sample_action(self, state: Dict) -> Tuple[Dict, str, float]:
+    def _sample_action(self, state) -> Tuple[Dict, str, float]:
         """
         Sample action from policy model (实际模型推理).
 
         Args:
-            state: Current state
+            state: Current state (AgentState 或 Dict)
 
         Returns:
             Tuple of (action dict, action text, log probability)
         """
+        # 将 AgentState 转换为字典
+        state_dict = self._state_to_dict(state)
+
         # Build prompt for model
-        prompt = self._build_prompt(state)
+        prompt = self._build_prompt(state_dict)
 
         # Tokenize
         inputs = self.tokenizer(
