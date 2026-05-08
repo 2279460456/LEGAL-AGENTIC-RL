@@ -227,9 +227,8 @@ class GRPOTrainer:
         traj_round = 0
         while not self.environment.is_terminal():
             traj_round += 1
-            # 进度显示（每轮）
-            if traj_round <= 2 or traj_round % 5 == 0:
-                print(f"    [Trajectory] Round {traj_round}/{self.environment.max_rounds}")
+            # 进度显示（显示所有轮次）
+            print(f"    [Round {traj_round}/{self.environment.max_rounds}] Generating...", end="", flush=True)
 
             # Sample action from policy (使用实际模型)
             action, action_text, log_prob = self._sample_action(state)
@@ -288,7 +287,6 @@ class GRPOTrainer:
         ).to(self.policy_model.device)
 
         # Generate with sampling - 优化生成参数
-        print("      [Generating]...", end="", flush=True)
         with torch.no_grad():
             outputs = self.policy_model.generate(
                 **inputs,
@@ -309,6 +307,10 @@ class GRPOTrainer:
 
         # Parse action from generated text
         action = self._parse_action(action_text)
+
+        # 显示模型输出（截断过长文本）
+        display_text = action_text[:100] + "..." if len(action_text) > 100 else action_text
+        print(f"      → [{action.get('type', 'unknown')}]: {display_text}")
 
         # Calculate log probability (简化版本，使用最后一个token的score)
         if outputs.scores:
