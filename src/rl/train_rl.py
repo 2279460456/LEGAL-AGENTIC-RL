@@ -58,15 +58,17 @@ def setup_logging(log_dir: str, run_name: str) -> str:
 def create_grpo_config(yaml_config: Dict) -> GRPOConfig:
     """Create GRPOConfig from YAML config"""
     grpo_section = yaml_config.get("grpo", {})
+    training_section = yaml_config.get("training", {})
 
     return GRPOConfig(
         group_size=grpo_section.get("group_size", 4),
         temperature=grpo_section.get("temperature", 1.0),
         top_p=grpo_section.get("top_p", 0.9),
-        learning_rate=yaml_config.get("training", {}).get("learning_rate", 1e-5),
-        max_grad_norm=yaml_config.get("training", {}).get("max_grad_norm", 1.0),
+        learning_rate=training_section.get("learning_rate", 1e-5),
+        max_grad_norm=training_section.get("max_grad_norm", 1.0),
         max_new_tokens=grpo_section.get("max_new_tokens", 256),
-        do_sample=grpo_section.get("do_sample", True)
+        do_sample=grpo_section.get("do_sample", True),
+        save_total_limit=training_section.get("save_total_limit", 2)  # 从配置读取
     )
 
 

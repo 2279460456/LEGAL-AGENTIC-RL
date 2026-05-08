@@ -26,10 +26,13 @@ Core formula:
 """
 
 import json
+import shutil
+import re
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from collections import defaultdict
+from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
@@ -47,6 +50,7 @@ class GRPOConfig:
     entropy_coef: float = 0.01  # Entropy bonus coefficient
     max_new_tokens: int = 256  # Maximum tokens to generate per action
     do_sample: bool = True  # Whether to sample (vs greedy)
+    save_total_limit: int = 2  # 最多保留几个checkpoint（节省磁盘空间）
 
 
 @dataclass
@@ -477,15 +481,12 @@ class GRPOTrainer:
 
     def save_checkpoint(self, output_dir: str, episode: int):
         """
-        Save model checkpoint.
+        Save model checkpoint and remove old checkpoints if exceeding limit.
 
         Args:
             output_dir: Output directory
             episode: Current episode number
         """
-        import os
-        from pathlib import Path
-
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
@@ -504,7 +505,8 @@ class GRPOTrainer:
             "config": {
                 "group_size": self.config.group_size,
                 "temperature": self.config.temperature,
-                "learning_rate": self.config.learning_rate
+                "learning_rate": self.config.learning_rate,
+                "save_total_limit": self.config.save_total_limit
             }
         }
 
@@ -512,6 +514,37 @@ class GRPOTrainer:
             json.dump(training_state, f, ensure_ascii=False, indent=2)
 
         print(f"Checkpoint saved to: {checkpoint_dir}")
+
+        # 删除旧的checkpoint（超过数量限制时）
+        if self.config.save_total_limit > 0:
+            self._cleanup_old_checkpoints(output_path)
+
+    def _cleanup_old_checkpoints(self, output_path: Path):
+        """
+        清理旧checkpoint，只保留最新的N个
+
+        Args:
+            output_path: checkpoint目录
+        """
+
+        # 查找所有checkpoint目录
+        checkpoints = []
+        for item in output_path.iterdir():
+            if item.is_dir() and item.name.startswith("checkpoint_episode_"):
+                match = re.search(r"checkpoint_episode_(\d+)", item.name)
+                if match:
+                    episode_num = int(match.group(1))
+                    checkpoints.append((episode_num, item))
+
+        # 按episode排序（大的在前，即最新的）
+        checkpoints.sort(key=lambda x: x[0], reverse=True)
+
+        # 删除超过限制的旧checkpoint
+        if len(checkpoints) > self.config.save_total_limit:
+            to_remove = checkpoints[self.config.save_total_limit:]
+            for episode, path in to_remove:
+                print(f"Removing old checkpoint: {path}")
+                shutil.rmtree(path)
 
 
 def main():

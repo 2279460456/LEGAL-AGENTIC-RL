@@ -111,3 +111,22 @@ python src/rl/model_loader.py --lora_path models/sft_checkpoint --test
 2. **数据构建支持断点续传**：程序中断后重新运行会跳过已处理数据
 3. **增量保存**：每50条数据保存临时文件，防止丢失
 4. **触发词覆盖**：支持8大罪名类型，69个罪名映射
+5. **Checkpoint数量限制**：默认只保留2个最新checkpoint，节省磁盘空间
+
+### Checkpoint设置
+
+在 `configs/rl_config.yaml` 中配置：
+
+```yaml
+training:
+  save_total_limit: 2  # 最多保留2个checkpoint
+  save_interval: 200   # 每200个episode保存一次
+```
+
+| save_total_limit | 估算磁盘占用 |
+|------------------|-------------|
+| 1 | ~320MB |
+| 2 | ~640MB |
+| 3 | ~960MB |
+
+**建议**：磁盘空间紧张时设置 `save_total_limit: 1` 或 `2`
