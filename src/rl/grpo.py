@@ -458,7 +458,7 @@ class GRPOTrainer:
         advantages: List[float]
     ) -> torch.Tensor:
         """
-        Compute GRPO loss.
+        Compute GRPO loss with gradient-enabled log probabilities.
 
         L = -∑_{i=1}^G A_i · ∑_{t} log π(a_t | s_t)
 
@@ -467,22 +467,93 @@ class GRPOTrainer:
             advantages: List of advantage values
 
         Returns:
-            Loss tensor
+            Loss tensor (with gradients)
         """
-        total_loss = torch.tensor(0.0, device=self.policy_model.device)
+        print("  [Computing GRPO loss with gradients...]")
+        total_loss = torch.tensor(0.0, device=self.policy_model.device, requires_grad=True)
 
-        for traj, adv in zip(trajectories, advantages):
-            # Sum of log probs for trajectory
-            traj_log_prob = sum(traj.log_probs)
+        for i, (traj, adv) in enumerate(zip(trajectories, advantages)):
+            # 重新计算带梯度的log概率
+            traj_log_prob = self._compute_trajectory_log_prob_with_grad(traj)
 
-            # Weighted by advantage (转换为tensor)
+            # Weighted by advantage
             loss_contribution = -adv * traj_log_prob
             total_loss = total_loss + loss_contribution
 
+            if i == 0:
+                print(f"    Trajectory 0: log_prob={traj_log_prob.item():.4f}, advantage={adv:.4f}")
+
         # Normalize by group size
-        total_loss /= len(trajectories)
+        total_loss = total_loss / len(trajectories)
+        print(f"  [Loss computed: {total_loss.item():.4f}]")
 
         return total_loss
+
+    def _compute_trajectory_log_prob_with_grad(self, traj: Trajectory) -> torch.Tensor:
+        """
+        Compute log probability of trajectory with gradients enabled.
+
+        需要重新将action_texts通过模型计算，获得带梯度的log概率。
+
+        Args:
+            traj: Trajectory object
+
+        Returns:
+            Log probability tensor with gradients
+        """
+        total_log_prob = torch.tensor(0.0, device=self.policy_model.device, requires_grad=True)
+
+        for state_dict, action_text in zip(traj.states, traj.action_texts):
+            # 构建完整prompt
+            prompt = self._build_prompt(state_dict)
+            full_text = prompt + action_text
+
+            # Tokenize
+            inputs = self.tokenizer(
+                full_text,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=2048
+            ).to(self.policy_model.device)
+
+            # 获取prompt长度（用于定位action部分）
+            prompt_inputs = self.tokenizer(
+                prompt,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=2048
+            ).to(self.policy_model.device)
+            prompt_length = prompt_inputs.input_ids.shape[1]
+
+            # Forward pass (带梯度)
+            outputs = self.policy_model(
+                input_ids=inputs.input_ids,
+                attention_mask=inputs.attention_mask,
+                return_dict=True
+            )
+            logits = outputs.logits  # [1, seq_len, vocab_size]
+
+            # 计算action部分的log概率
+            action_ids = inputs.input_ids[0, prompt_length:]  # action部分的token ids
+
+            if len(action_ids) == 0:
+                continue
+
+            # 对于每个action token，计算其log概率
+            # logits[i]预测下一个token，所以要用 logits[prompt_length-1:end-1] 预测 action_ids
+            pred_logits = logits[0, prompt_length-1:prompt_length-1+len(action_ids), :]
+            log_probs = torch.log_softmax(pred_logits, dim=-1)
+
+            # 取每个token的log概率
+            token_log_probs = log_probs[range(len(action_ids)), action_ids]
+
+            # 总和（简化的序列log概率）
+            step_log_prob = token_log_probs.sum()
+            total_log_prob = total_log_prob + step_log_prob
+
+        return total_log_prob
 
     def _update_policy(self, loss: torch.Tensor):
         """
