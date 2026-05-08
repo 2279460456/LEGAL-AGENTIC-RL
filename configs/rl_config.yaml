@@ -1,13 +1,15 @@
-# RL Training Configuration
+# RL Training Configuration (优化版 - 24GB显存)
 # LEGAL-AGENTIC-RL Project
+# 针对 RTX 3090/4090 (24GB) 优化
 
 # GRPO Configuration
 grpo:
-  group_size: 4  # Number of trajectories per group (G)
+  group_size: 8  # [调整] 从4增加到8，利用更多显存生成更多轨迹
   temperature: 1.0  # Sampling temperature for diversity
   top_p: 0.9  # Top-p sampling
   max_turns: 10  # Maximum conversation turns per episode
   early_stop_patience: 5  # Stop if no improvement for N epochs
+  max_new_tokens: 256  # [新增] 每次生成的最大token数
 
 # Environment Configuration
 environment:
@@ -16,7 +18,7 @@ environment:
     - "objective"   # Level 2: Action details, injury degree
     - "sentencing"  # Level 3: Confession, compensation
   trigger_method: "keyword"  # keyword or semantic
-  max_rounds: 10
+  max_rounds: 10  # 最大交互轮数
 
 # Reward Configuration
 reward:
@@ -39,26 +41,49 @@ reward:
 
 # Training Configuration
 training:
-  learning_rate: 1e-5
-  batch_size: 1  # Process one case at a time
-  num_episodes: 1000
-  eval_interval: 50
-  save_interval: 100
+  learning_rate: 2e-5  # [调整] 从1e-5增加到2e-5，配合更大batch
+  batch_size: 1  # Process one case at a time (GRPO天然batch=1)
+  gradient_accumulation_steps: 1  # [新增] 不需要累积，显存足够
+  num_episodes: 2000  # [调整] 从1000增加到2000
+  eval_interval: 100  # [调整] 从50增加到100
+  save_interval: 200  # [调整] 从100增加到200
+  warmup_steps: 100  # [新增] warmup步数
+  max_grad_norm: 1.0  # [新增] 梯度裁剪
 
 # Model Configuration
 model:
-  sft_checkpoint: "models/sft_checkpoint"
   base_model: "Qwen/Qwen3-8B"
+  sft_checkpoint: "models/sft_checkpoint"
+
+  # LoRA配置
+  lora:
+    r: 64  # [新增] LoRA rank，24GB可用更大值
+    lora_alpha: 128  # [新增] alpha = 2 * r
+    target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]  # [新增] 目标模块
+    lora_dropout: 0.05  # [新增] dropout率
+
+  # 量化配置
+  quantization:
+    use_4bit: true  # [新增] 使用4bit量化
+    bnb_4bit_quant_type: "nf4"  # [新增] NF4量化
+    bnb_4bit_compute_dtype: "float16"  # [新增] 计算精度
+
+  # 显存优化
+  optimization:
+    use_flash_attention: true  # [新增] Flash Attention 2加速
+    use_gradient_checkpointing: false  # [新增] 24GB显存充足，不需要
+    max_memory: {0: "20GB"}  # [新增] GPU显存限制
 
 # Data Configuration
 data:
   train_cases_path: "data/rl_env/train_cases.json"
   test_cases_path: "data/rl_env/test_cases.json"
-  num_train_cases: 500
-  num_test_cases: 100
+  num_train_cases: 1500  # [调整] 从500增加到1500
+  num_test_cases: 300  # [调整] 从100增加到300
 
 # Output Configuration
 output:
   output_dir: "models/rl_checkpoint"
   log_dir: "results/logs"
-  run_name: "grpo_legal_agent"
+  run_name: "grpo_legal_agent_24g"
+  save_total_limit: 3  # [新增] 最多保存3个checkpoint

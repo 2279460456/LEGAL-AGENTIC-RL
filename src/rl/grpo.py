@@ -2,6 +2,7 @@
 GRPO (Group Relative Policy Optimization) Algorithm Module
 
 Implements the GRPO algorithm for legal multi-agent reinforcement learning.
+基于SFT模型进行RL训练。
 
 Core formula:
     L_GRPO = -E[∑_{i=1}^G (A_i / σ_R) · log π(a_i | s_i)]
@@ -10,25 +11,28 @@ Core formula:
     - G: Group size (number of trajectories per case)
     - A_i: Advantage of trajectory i = R_i - mean(R_group)
     - σ_R: Standard deviation of rewards in group
+
+使用方法:
+    from src.rl.grpo import GRPOTrainer, GRPOConfig
+    from src.rl.model_loader import load_sft_model
+
+    model, tokenizer = load_sft_model(
+        base_model_path="Qwen/Qwen3-8B",
+        lora_path="models/sft_checkpoint"
+    )
+
+    trainer = GRPOTrainer(model, tokenizer, config)
+    loss, rewards = trainer.train_step(case_data)
 """
 
 import json
 import numpy as np
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Any
+from dataclasses import dataclass, field
 from collections import defaultdict
 import torch
-
-
-@dataclass
-class Trajectory:
-    """Single trajectory (sequence of actions)"""
-    case_id: str
-    states: List[Dict]  # Sequence of states
-    actions: List[Dict]  # Sequence of actions
-    log_probs: List[float]  # Log probabilities of actions
-    total_reward: float  # Final total reward
-    step_rewards: List[float]  # Per-step rewards
+import torch.nn as nn
+from torch.optim import AdamW
 
 
 @dataclass
@@ -41,46 +45,85 @@ class GRPOConfig:
     max_grad_norm: float = 1.0  # Gradient clipping
     value_loss_coef: float = 0.5  # Value loss coefficient (if using value network)
     entropy_coef: float = 0.01  # Entropy bonus coefficient
+    max_new_tokens: int = 256  # Maximum tokens to generate per action
+    do_sample: bool = True  # Whether to sample (vs greedy)
+
+
+@dataclass
+class Trajectory:
+    """Single trajectory (sequence of actions)"""
+    case_id: str
+    states: List[Dict]  # Sequence of states
+    actions: List[Dict]  # Sequence of actions
+    action_texts: List[str] = field(default_factory=list)  # Sequence of action texts
+    log_probs: List[float] = field(default_factory=list)  # Log probabilities
+    total_reward: float = 0.0  # Final total reward
+    step_rewards: List[float] = field(default_factory=list)  # Per-step rewards
 
 
 class GRPOTrainer:
     """
     GRPO training algorithm implementation.
 
-    GRPO is a variant of policy gradient that uses group-relative advantages:
-    - Sample multiple trajectories for same case
-    - Compute advantages relative to group mean
-    - Optimize to favor trajectories with higher-than-average rewards
+    基于SFT模型进行RL训练，使用LoRA适配器。
 
     Usage:
-        trainer = GRPOTrainer(policy_model, config)
+        # 先加载SFT模型
+        model, tokenizer = load_sft_model(
+            base_model_path="Qwen/Qwen3-8B",
+            lora_path="models/sft_checkpoint"
+        )
+
+        # 创建训练器
+        trainer = GRPOTrainer(model, tokenizer, config)
         for episode in range(num_episodes):
             loss, rewards = trainer.train_step(case_data)
     """
 
     def __init__(
         self,
-        policy_model,  # The language model to train
+        policy_model,  # SFT模型（带LoRA adapters）
+        tokenizer,     # Tokenizer for the model
         config: Optional[GRPOConfig] = None,
         reward_calculator=None,
-        environment=None
+        environment=None,
+        optimizer: Optional[torch.optim.Optimizer] = None
     ):
         """
         Initialize GRPO Trainer.
 
         Args:
-            policy_model: Language model (with LoRA adapters)
+            policy_model: Language model (SFT模型，带LoRA adapters)
+            tokenizer: Tokenizer for the model
             config: GRPO configuration
             reward_calculator: Reward calculator module
             environment: RL environment
+            optimizer: Optimizer (如果None，自动创建)
         """
         self.policy_model = policy_model
+        self.tokenizer = tokenizer
         self.config = config or GRPOConfig()
         self.reward_calculator = reward_calculator
         self.environment = environment
 
+        # 创建优化器（只优化LoRA参数）
+        if optimizer is None:
+            trainable_params = [p for p in policy_model.parameters() if p.requires_grad]
+            self.optimizer = AdamW(trainable_params, lr=self.config.learning_rate)
+        else:
+            self.optimizer = optimizer
+
         # Training statistics
         self.training_stats = defaultdict(list)
+        self.global_step = 0
+
+    def enable_training_mode(self):
+        """启用训练模式"""
+        self.policy_model.train()
+
+    def enable_eval_mode(self):
+        """启用评估模式"""
+        self.policy_model.eval()
 
     def train_step(
         self,
@@ -99,6 +142,9 @@ class GRPOTrainer:
         """
         G = group_size or self.config.group_size
 
+        # 启用训练模式
+        self.enable_training_mode()
+
         # Step 1: Generate G trajectories for same case
         trajectories = self._generate_trajectories(case_data, G)
 
@@ -108,16 +154,18 @@ class GRPOTrainer:
         # Step 3: Compute advantages (relative to group mean)
         advantages = self._compute_advantages(rewards)
 
-        # Step 4: Compute GRPO loss
+        # Step 4: Compute GRPO loss (基于实际log_probs)
         loss = self._compute_grpo_loss(trajectories, advantages)
 
         # Step 5: Backpropagate and update
         self._update_policy(loss)
 
+        self.global_step += 1
+
         # Record statistics
         self.training_stats["mean_reward"].append(np.mean(rewards))
         self.training_stats["std_reward"].append(np.std(rewards))
-        self.training_stats["loss"].append(loss)
+        self.training_stats["loss"].append(loss.item() if hasattr(loss, 'item') else float(loss))
 
         return loss, rewards
 
@@ -159,12 +207,13 @@ class GRPOTrainer:
 
         states = []
         actions = []
+        action_texts = []
         log_probs = []
         step_rewards = []
 
         while not self.environment.is_terminal():
-            # Sample action from policy
-            action, log_prob = self._sample_action(state)
+            # Sample action from policy (使用实际模型)
+            action, action_text, log_prob = self._sample_action(state)
 
             # Execute action
             result = self.environment.step(action)
@@ -172,6 +221,7 @@ class GRPOTrainer:
             # Record
             states.append(self._state_to_dict(state))
             actions.append(action)
+            action_texts.append(action_text)
             log_probs.append(log_prob)
             step_rewards.append(result.reward)
 
@@ -185,57 +235,150 @@ class GRPOTrainer:
             case_id=case_data.get("case_id", ""),
             states=states,
             actions=actions,
+            action_texts=action_texts,
             log_probs=log_probs,
             total_reward=final_reward + sum(step_rewards),
             step_rewards=step_rewards
         )
 
-    def _sample_action(self, state: Dict) -> Tuple[Dict, float]:
+    def _sample_action(self, state: Dict) -> Tuple[Dict, str, float]:
         """
-        Sample action from policy model.
+        Sample action from policy model (实际模型推理).
 
         Args:
             state: Current state
 
         Returns:
-            Tuple of (action dict, log probability)
+            Tuple of (action dict, action text, log probability)
         """
         # Build prompt for model
         prompt = self._build_prompt(state)
 
-        # Sample from model with temperature
-        # TODO: Implement actual model sampling
-        # For placeholder, return mock action
+        # Tokenize
+        inputs = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=2048
+        ).to(self.policy_model.device)
 
-        # Mock implementation
-        if np.random.random() < 0.3:  # 30% chance to judge
+        # Generate with sampling
+        with torch.no_grad():
+            outputs = self.policy_model.generate(
+                **inputs,
+                max_new_tokens=self.config.max_new_tokens,
+                do_sample=self.config.do_sample,
+                temperature=self.config.temperature,
+                top_p=self.config.top_p,
+                pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+                return_dict_in_generate=True,
+                output_scores=True
+            )
+
+        # Decode generated text
+        generated_ids = outputs.sequences[0][inputs.input_ids.shape[1]:]
+        action_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+
+        # Parse action from generated text
+        action = self._parse_action(action_text)
+
+        # Calculate log probability (简化版本，使用最后一个token的score)
+        if outputs.scores:
+            last_score = outputs.scores[-1][0]  # 最后一步的logits
+            probs = torch.softmax(last_score, dim=-1)
+            # 取生成的token的概率
+            if len(generated_ids) > 0:
+                last_token_id = generated_ids[-1]
+                log_prob = torch.log(probs[last_token_id] + 1e-10).item()
+            else:
+                log_prob = -1.0
+        else:
+            log_prob = -1.0
+
+        return action, action_text, log_prob
+
+    def _parse_action(self, action_text: str) -> Dict:
+        """
+        Parse action from generated text.
+
+        Args:
+            action_text: Generated text from model
+
+        Returns:
+            Action dict with 'type' and 'content'
+        """
+        action_text = action_text.strip()
+
+        # 判断是判决还是提问
+        if "判决" in action_text or "裁定" in action_text or "罪名" in action_text:
+            # 尝试解析判决内容
             action = {
                 "type": "judge",
-                "content": {
-                    "crime": "故意伤害罪",
-                    "sentence_months": 36,
-                    "laws": ["刑法第234条"]
-                }
+                "content": self._parse_judgment(action_text)
             }
         else:
+            # 默认为查询
             action = {
                 "type": "query",
-                "content": "请说明被告人的作案动机"
+                "content": action_text
             }
 
-        log_prob = np.log(0.5)  # Placeholder log prob
+        return action
 
-        return action, log_prob
+    def _parse_judgment(self, text: str) -> Dict:
+        """解析判决内容"""
+        # 简化解析，返回基本结构
+        judgment = {
+            "crime": "",
+            "sentence_months": 0,
+            "laws": []
+        }
+
+        # 尝试提取罪名
+        import re
+        crime_match = re.search(r"罪名[：:]\s*([^\n，。]+)", text)
+        if crime_match:
+            judgment["crime"] = crime_match.group(1).strip()
+
+        # 尝试提取刑期
+        sentence_match = re.search(r"有期徒刑\s*(\d+)\s*年", text)
+        if sentence_match:
+            judgment["sentence_months"] = int(sentence_match.group(1)) * 12
+        else:
+            sentence_match = re.search(r"有期徒刑\s*(\d+)\s*个?月", text)
+            if sentence_match:
+                judgment["sentence_months"] = int(sentence_match.group(1))
+
+        return judgment
 
     def _build_prompt(self, state: Dict) -> str:
         """Build prompt for model based on state"""
-        prompt = f"""当前案情：{state.get('public_info', '')}
+        public_info = state.get('public_info', '')
+        revealed = state.get('revealed_evidence', [])
+        current_round = state.get('current_round', 0)
+        max_rounds = state.get('max_rounds', 10)
 
-已获取证据：{state.get('revealed_evidence', [])}
+        revealed_text = "\n".join(revealed) if revealed else "暂无"
 
-当前轮次：第{state.get('current_round', 0)}轮
+        prompt = f"""你是一位资深法官，正在审理案件。你的任务是：
+1. 分析案情和证据
+2. 通过提问获取必要的证据细节
+3. 当证据充分时给出判决
 
-请决定下一步行动：提问或判决。"""
+当前案情：{public_info}
+
+已获取证据：
+{revealed_text}
+
+当前轮次：第{current_round}轮（最多{max_rounds}轮）
+
+请决定下一步行动：
+- 如果需要更多证据，请提问（格式：提问：...）
+- 如果证据充分，请判决（格式：判决：罪名...刑期...）
+
+请直接输出你的决定："""
+
         return prompt
 
     def _state_to_dict(self, state) -> Dict:
@@ -274,7 +417,7 @@ class GRPOTrainer:
         self,
         trajectories: List[Trajectory],
         advantages: List[float]
-    ) -> float:
+    ) -> torch.Tensor:
         """
         Compute GRPO loss.
 
@@ -285,122 +428,90 @@ class GRPOTrainer:
             advantages: List of advantage values
 
         Returns:
-            Loss value
+            Loss tensor
         """
-        loss = 0.0
+        total_loss = torch.tensor(0.0, device=self.policy_model.device)
 
         for traj, adv in zip(trajectories, advantages):
             # Sum of log probs for trajectory
             traj_log_prob = sum(traj.log_probs)
 
-            # Weighted by advantage
-            loss -= adv * traj_log_prob
+            # Weighted by advantage (转换为tensor)
+            loss_contribution = -adv * traj_log_prob
+            total_loss = total_loss + loss_contribution
 
         # Normalize by group size
-        loss /= len(trajectories)
+        total_loss /= len(trajectories)
 
-        return loss
+        return total_loss
 
-    def _update_policy(self, loss: float):
+    def _update_policy(self, loss: torch.Tensor):
         """
         Update policy model with computed loss.
 
         Args:
-            loss: Computed loss value
+            loss: Computed loss tensor
         """
-        # TODO: Implement actual gradient update
-        # Placeholder for actual backpropagation
+        self.optimizer.zero_grad()
 
-        # In actual implementation:
-        # self.policy_model.backward(loss)
-        # self.optimizer.step()
-        pass
+        # 反向传播
+        loss.backward()
+
+        # 梯度裁剪
+        torch.nn.utils.clip_grad_norm_(
+            [p for p in self.policy_model.parameters() if p.requires_grad],
+            self.config.max_grad_norm
+        )
+
+        # 更新参数
+        self.optimizer.step()
 
     def get_training_stats(self) -> Dict:
         """Get training statistics"""
         return {
             "mean_rewards": self.training_stats["mean_reward"],
             "std_rewards": self.training_stats["std_reward"],
-            "losses": self.training_stats["loss"]
+            "losses": self.training_stats["loss"],
+            "global_step": self.global_step
         }
 
+    def save_checkpoint(self, output_dir: str, episode: int):
+        """
+        Save model checkpoint.
 
-def grpo_train_step(
-    policy_model,
-    env,
-    case_data: Dict,
-    reward_calculator,
-    G: int = 4
-) -> Tuple[float, List[float], List[Trajectory]]:
-    """
-    Standalone GRPO training step function.
+        Args:
+            output_dir: Output directory
+            episode: Current episode number
+        """
+        import os
+        from pathlib import Path
 
-    Args:
-        policy_model: Policy model
-        env: Environment
-        case_data: Case data
-        reward_calculator: Reward calculator
-        G: Group size
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
 
-    Returns:
-        Tuple of (loss, rewards, trajectories)
-    """
-    trajectories = []
-    rewards = []
+        checkpoint_dir = output_path / f"checkpoint_episode_{episode}"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate G trajectories
-    for g in range(G):
-        state = env.reset(case_data)
-        traj_states = []
-        traj_actions = []
-        traj_log_probs = []
-        total_reward = 0
+        # Save LoRA adapters
+        self.policy_model.save_pretrained(str(checkpoint_dir))
+        self.tokenizer.save_pretrained(str(checkpoint_dir))
 
-        while not env.is_terminal():
-            # Sample action (placeholder)
-            action, log_prob = _sample_action_placeholder(state)
-            traj_states.append(state)
-            traj_actions.append(action)
-            traj_log_probs.append(log_prob)
+        # Save training state
+        training_state = {
+            "episode": episode,
+            "global_step": self.global_step,
+            "training_stats": dict(self.training_stats),
+            "config": {
+                "group_size": self.config.group_size,
+                "temperature": self.config.temperature,
+                "learning_rate": self.config.learning_rate
+            }
+        }
 
-            # Step environment
-            result = env.step(action)
-            total_reward += result.reward
-            state = result.state
+        with open(checkpoint_dir / "training_state.json", "w", encoding="utf-8") as f:
+            json.dump(training_state, f, ensure_ascii=False, indent=2)
 
-        # Final reward
-        final_reward = env.get_final_reward() or 0
-        total_reward += final_reward
-
-        trajectories.append(Trajectory(
-            case_id=case_data.get("case_id", ""),
-            states=traj_states,
-            actions=traj_actions,
-            log_probs=traj_log_probs,
-            total_reward=total_reward,
-            step_rewards=[]
-        ))
-        rewards.append(total_reward)
-
-    # Compute advantages
-    mean_r = np.mean(rewards)
-    std_r = np.std(rewards) or 1.0
-    advantages = [(r - mean_r) / std_r for r in rewards]
-
-    # Compute loss
-    loss = 0
-    for traj, adv in zip(trajectories, advantages):
-        loss -= adv * sum(traj.log_probs)
-    loss /= G
-
-    return loss, rewards, trajectories
-
-
-def _sample_action_placeholder(state) -> Tuple[Dict, float]:
-    """Placeholder action sampling"""
-    if np.random.random() < 0.3:
-        return {"type": "judge", "content": {"crime": "placeholder"}}, -0.5
-    return {"type": "query", "content": "placeholder query"}, -0.5
+        print(f"Checkpoint saved to: {checkpoint_dir}")
 
 
 def main():
@@ -411,22 +522,13 @@ def main():
         learning_rate=1e-5
     )
 
-    trainer = GRPOTrainer(
-        policy_model=None,  # Placeholder
-        config=config
-    )
-
-    # Simulate training step
-    case_data = {
-        "case_id": "test_001",
-        "public_info": "Test case",
-        "hidden_evidence": {},
-        "ground_truth": {"crime": "test"}
-    }
-
-    # Would need actual environment and model
     print(f"GRPO Config: group_size={config.group_size}")
     print(f"Temperature: {config.temperature}")
+    print(f"Max new tokens: {config.max_new_tokens}")
+    print("\n使用方法:")
+    print("1. 先完成SFT训练，保存到 models/sft_checkpoint")
+    print("2. 使用 load_sft_model 加载SFT模型")
+    print("3. 创建 GRPOTrainer 并开始训练")
 
 
 if __name__ == "__main__":

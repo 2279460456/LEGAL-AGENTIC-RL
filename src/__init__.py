@@ -5,30 +5,13 @@ Multi-Agent Reinforcement Learning for Legal Judgment Prediction
 
 __version__ = "0.1.0"
 
-from .data_processing import (
-    CoTDistiller,
-    EvidenceSplitter,
-    DatasetBuilder
-)
-
-from .rl import (
-    EvidenceEnvironment,
-    RewardCalculator,
-    GRPOTrainer
-)
-
-from .sft import SFTTrainer
-
-from .evaluation import MetricsCalculator, BaselineComparator
+# 简化导入，避免引用不存在的模块
+# 用户可以直接导入需要的模块
 
 __all__ = [
-    'CoTDistiller',
-    'EvidenceSplitter',
-    'DatasetBuilder',
-    'EvidenceEnvironment',
-    'RewardCalculator',
-    'GRPOTrainer',
-    'SFTTrainer',
-    'MetricsCalculator',
-    'BaselineComparator'
+    # 需要时从子模块导入
+    # from src.rl.environment import EvidenceEnvironment
+    # from src.rl.reward import RewardCalculator
+    # from src.rl.grpo import GRPOTrainer
+    # from src.data_processing.llm_evidence_splitter import ...
 ]
