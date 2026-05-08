@@ -23,7 +23,8 @@ def load_sft_model(
     lora_path: str = "models/sft_checkpoint",
     use_quantization: bool = True,
     device_map: str = "auto",
-    max_memory: Optional[dict] = None
+    max_memory: Optional[dict] = None,
+    enable_training: bool = False  # 新增：是否启用训练模式
 ) -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
     """
     加载SFT后的模型（带LoRA适配器）
@@ -34,6 +35,7 @@ def load_sft_model(
         use_quantization: 是否使用4bit量化（节省显存）
         device_map: 设备映射策略
         max_memory: 最大内存限制（如 {0: "20GB", "cpu": "30GB"}）
+        enable_training: 是否启用训练模式（用于RL训练）
 
     Returns:
         (model, tokenizer) 元组
@@ -44,6 +46,7 @@ def load_sft_model(
     print(f"Base model: {base_model_path}")
     print(f"LoRA path: {lora_path}")
     print(f"Quantization: {use_quantization}")
+    print(f"Enable training: {enable_training}")
 
     # 配置量化参数
     if use_quantization:
@@ -78,11 +81,22 @@ def load_sft_model(
     model = PeftModel.from_pretrained(
         base_model,
         lora_path,
-        device_map=device_map
+        device_map=device_map,
+        is_trainable=enable_training  # 关键：设置是否可训练
     )
+
+    # 如果启用训练模式，需要额外的准备
+    if enable_training and use_quantization:
+        from peft import prepare_model_for_kbit_training
+        model = prepare_model_for_kbit_training(model)
 
     print("\nModel loaded successfully!")
     print(f"Model device: {next(model.parameters()).device}")
+
+    # 打印可训练参数数量
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Trainable params: {trainable_params} / {total_params} ({100*trainable_params/total_params:.2f}%)")
 
     return model, tokenizer
 

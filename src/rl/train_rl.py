@@ -60,15 +60,20 @@ def create_grpo_config(yaml_config: Dict) -> GRPOConfig:
     grpo_section = yaml_config.get("grpo", {})
     training_section = yaml_config.get("training", {})
 
+    # 确保learning_rate是float类型
+    lr_value = training_section.get("learning_rate", 1e-5)
+    if isinstance(lr_value, str):
+        lr_value = float(lr_value)
+
     return GRPOConfig(
         group_size=grpo_section.get("group_size", 4),
         temperature=grpo_section.get("temperature", 1.0),
         top_p=grpo_section.get("top_p", 0.9),
-        learning_rate=training_section.get("learning_rate", 1e-5),
+        learning_rate=lr_value,
         max_grad_norm=training_section.get("max_grad_norm", 1.0),
         max_new_tokens=grpo_section.get("max_new_tokens", 256),
         do_sample=grpo_section.get("do_sample", True),
-        save_total_limit=training_section.get("save_total_limit", 2)  # 从配置读取
+        save_total_limit=training_section.get("save_total_limit", 2)
     )
 
 
@@ -241,10 +246,12 @@ def main():
     base_model = config.get("model", {}).get("base_model", "Qwen/Qwen3-8B")
     use_4bit = not args.no_quantization
 
+    # 加载SFT模型，启用训练模式（用于GRPO训练）
     model, tokenizer = load_sft_model(
         base_model_path=base_model,
         lora_path=sft_checkpoint,
-        use_quantization=use_4bit
+        use_quantization=use_4bit,
+        enable_training=True  # 关键：启用LoRA训练
     )
 
     # Show model info

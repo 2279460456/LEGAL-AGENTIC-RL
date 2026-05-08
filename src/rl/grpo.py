@@ -113,6 +113,13 @@ class GRPOTrainer:
         # 创建优化器（只优化LoRA参数）
         if optimizer is None:
             trainable_params = [p for p in policy_model.parameters() if p.requires_grad]
+            if len(trainable_params) == 0:
+                raise ValueError(
+                    "模型没有可训练参数！请确保加载模型时启用训练模式:\n"
+                    "  load_sft_model(..., enable_training=True)"
+                )
+            trainable_param_count = sum(p.numel() for p in trainable_params)
+            print(f"Creating optimizer for {trainable_param_count} trainable parameters")
             self.optimizer = AdamW(trainable_params, lr=self.config.learning_rate)
         else:
             self.optimizer = optimizer
