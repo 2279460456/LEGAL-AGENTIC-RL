@@ -153,11 +153,23 @@ class GRPOTrainer:
         """
         G = group_size or self.config.group_size
 
+        # 清理显存缓存
+        torch.cuda.empty_cache()
+        print(f"[Memory cleared before episode, group_size={G}]")
+
         # 启用训练模式
         self.enable_training_mode()
 
-        # Step 1: Generate G trajectories for same case
+        # Step 1: Generate G trajectories for same case (no_grad模式)
+        self.policy_model.eval()  # 生成时用eval模式
         trajectories = self._generate_trajectories(case_data, G)
+
+        # 清理显存后再计算loss
+        torch.cuda.empty_cache()
+        print("[Memory cleared before loss computation]")
+
+        # 切回训练模式计算loss
+        self.policy_model.train()
 
         # Step 2: Compute total rewards for each trajectory
         rewards = [traj.total_reward for traj in trajectories]
@@ -493,7 +505,7 @@ class GRPOTrainer:
         """
         Compute log probability of trajectory with gradients enabled.
 
-        需要重新将action_texts通过模型计算，获得带梯度的log概率。
+        优化版本：只计算最后几个token的log prob，减少显存占用。
 
         Args:
             traj: Trajectory object
@@ -514,44 +526,51 @@ class GRPOTrainer:
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=2048
+                max_length=1024  # 减少最大长度
             ).to(self.policy_model.device)
 
-            # 获取prompt长度（用于定位action部分）
+            # 获取prompt长度
             prompt_inputs = self.tokenizer(
                 prompt,
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=2048
+                max_length=1024
             ).to(self.policy_model.device)
             prompt_length = prompt_inputs.input_ids.shape[1]
 
-            # Forward pass (带梯度)
-            outputs = self.policy_model(
-                input_ids=inputs.input_ids,
-                attention_mask=inputs.attention_mask,
-                return_dict=True
-            )
-            logits = outputs.logits  # [1, seq_len, vocab_size]
-
-            # 计算action部分的log概率
-            action_ids = inputs.input_ids[0, prompt_length:]  # action部分的token ids
-
+            # 只取最后32个action tokens计算（减少计算量）
+            action_ids = inputs.input_ids[0, prompt_length:]
             if len(action_ids) == 0:
                 continue
 
-            # 对于每个action token，计算其log概率
-            # logits[i]预测下一个token，所以要用 logits[prompt_length-1:end-1] 预测 action_ids
-            pred_logits = logits[0, prompt_length-1:prompt_length-1+len(action_ids), :]
+            # 限制计算的token数量
+            max_tokens_to_compute = min(32, len(action_ids))
+            start_idx = max(0, len(action_ids) - max_tokens_to_compute)
+
+            # Forward pass (带梯度) - 只计算需要的部分
+            with torch.cuda.amp.autocast():  # 使用混合精度减少显存
+                outputs = self.policy_model(
+                    input_ids=inputs.input_ids,
+                    attention_mask=inputs.attention_mask,
+                    return_dict=True
+                )
+            logits = outputs.logits
+
+            # 只计算最后几个token的log概率
+            pred_logits = logits[0, prompt_length-1+start_idx:prompt_length-1+len(action_ids), :]
+            target_ids = action_ids[start_idx:]
+
             log_probs = torch.log_softmax(pred_logits, dim=-1)
+            token_log_probs = log_probs[range(len(target_ids)), target_ids]
 
-            # 取每个token的log概率
-            token_log_probs = log_probs[range(len(action_ids)), action_ids]
-
-            # 总和（简化的序列log概率）
+            # 总和
             step_log_prob = token_log_probs.sum()
             total_log_prob = total_log_prob + step_log_prob
+
+            # 清理中间变量
+            del outputs, logits, pred_logits, log_probs
+            torch.cuda.empty_cache()
 
         return total_log_prob
 

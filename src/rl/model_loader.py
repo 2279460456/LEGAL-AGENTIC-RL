@@ -93,14 +93,9 @@ def load_sft_model(
             is_trainable=True  # 显式设置为可训练
         )
 
-        # 禁用gradient checkpointing以加速生成（24GB显存足够）
-        # 必须在加载LoRA之后禁用，因为prepare_model_for_kbit_training会启用
-        if hasattr(model, 'gradient_checkpointing_disable'):
-            model.gradient_checkpointing_disable()
-            print("Gradient checkpointing disabled for faster generation")
-        elif hasattr(model, 'base_model') and hasattr(model.base_model, 'gradient_checkpointing_disable'):
-            model.base_model.gradient_checkpointing_disable()
-            print("Gradient checkpointing disabled (via base_model)")
+        # 启用gradient checkpointing以节省显存（forward计算需要）
+        # prepare_model_for_kbit_training已经启用，我们保持它启用
+        print("Gradient checkpointing enabled for memory efficiency")
 
         # 强制解冻LoRA参数（某些peft版本需要手动解冻）
         print("Unfreezing LoRA parameters...")

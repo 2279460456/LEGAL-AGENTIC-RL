@@ -4,12 +4,12 @@
 
 # GRPO Configuration
 grpo:
-  group_size: 4  # [调整] 从8减少到4，减少每个episode的模型调用次数
+  group_size: 2  # [调整] 从4减少到2，减少显存占用（forward计算需要大量显存）
   temperature: 1.0  # Sampling temperature for diversity
   top_p: 0.9  # Top-p sampling
   max_turns: 10  # Maximum conversation turns per episode
   early_stop_patience: 5  # Stop if no improvement for N epochs
-  max_new_tokens: 128  # [调整] 从256减少到128，加快生成速度
+  max_new_tokens: 64  # [调整] 从128减少到64，进一步节省显存
   do_sample: true
 
 # Environment Configuration
@@ -73,7 +73,7 @@ model:
   # 显存优化
   optimization:
     use_flash_attention: true  # [新增] Flash Attention 2加速
-    use_gradient_checkpointing: false  # [新增] 24GB显存充足，不需要
+    use_gradient_checkpointing: true  # [修改] 启用gradient checkpointing节省显存
     max_memory: {0: "20GB"}  # [新增] GPU显存限制
 
 # Data Configuration
