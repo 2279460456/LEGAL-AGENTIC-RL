@@ -492,5 +492,13 @@ if __name__ == "__main__":
 
 ---
 
+## 相关文档
+
+- [训练指南](training_guide.md) - 完整训练命令和配置
+- [实验设计详解](experiment_phases.md) - SFT和RL阶段的完整设计
+
+---
+
 *文档创建时间: 2026-05-01*
+*最后更新: 2026-05-10*
 *作者: Legal Agenttic RL Team*

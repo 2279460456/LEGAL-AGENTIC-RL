@@ -401,4 +401,13 @@ python src/rl/train_rl.py --config configs/rl_config.yaml
 ---
 
 *文档创建时间: 2026-05-05*
+*最后更新: 2026-05-10*
 *状态: 完整实验阶段说明*
+
+---
+
+## 相关文档
+
+- [训练指南](training_guide.md) - 完整训练命令和配置
+- [证据层级设计](crime_specific_evidence_design.md) - 罪名特异性触发词系统
+- [SFT评估方案](sft_evaluation.md) - SFT阶段的评估指标和方法

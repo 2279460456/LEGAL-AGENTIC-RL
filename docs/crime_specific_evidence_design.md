@@ -304,5 +304,13 @@ CRIME_SPECIFIC_EVIDENCE_LAYERS["新罪名"] = {
 
 ---
 
+## 相关文档
+
+- [训练指南](training_guide.md) - 完整训练命令和配置
+- [实验设计详解](experiment_phases.md) - SFT和RL阶段的完整设计
+
+---
+
 *文档创建时间: 2026-05-05*
+*最后更新: 2026-05-10*
 *状态: 改进方案已实施并验证*
