@@ -354,8 +354,9 @@ class GRPOTrainer:
 
         改进版本：语义检测替代格式检测
         1. 重复输出 → invalid
-        2. prompt模板残留 → invalid
-        3. 语义判断：判断是提问还是判决
+        2. 长度超限 → invalid（防止输出完整文书）
+        3. prompt模板残留 → invalid
+        4. 语义判断：判断是提问还是判决
 
         Args:
             action_text: Generated text from model
@@ -373,7 +374,19 @@ class GRPOTrainer:
                 "repetition_penalty": -0.3
             }
 
-        # 检测2：prompt模板残留（模型复制了模板词）
+        # 检测2：长度超限（新增：防止输出完整文书）
+        # 正常提问或判决应该在200字以内，超过可能输出了完整文书
+        if len(action_text) > 300:
+            # 如果是判决且包含关键信息，可以宽容一些
+            if not self._is_judgment_semantic(action_text):
+                return {
+                    "type": "invalid",
+                    "content": action_text,
+                    "repetition_penalty": -0.1,
+                    "reason": "输出过长（可能输出了完整文书）"
+                }
+
+        # 检测3：prompt模板残留（模型复制了模板词）
         if self._has_template_residue(action_text):
             return {
                 "type": "invalid",
@@ -381,7 +394,7 @@ class GRPOTrainer:
                 "repetition_penalty": -0.2
             }
 
-        # 检测3：语义判断（替代格式检测）
+        # 检测4：语义判断（替代格式检测）
         # 优先判断是否是判决（因为判决有明确的特征词）
         if self._is_judgment_semantic(action_text):
             return {
@@ -404,40 +417,64 @@ class GRPOTrainer:
         }
 
     def _has_template_residue(self, text: str) -> bool:
-        """检测模板残留词（改进版，覆盖更多残留词）"""
+        """检测模板残留词（全面版）"""
         residue_patterns = [
-            # 指令词残留
+            # 角色描述残留
+            "你是一位",
+            "你是资深",
+            "你是一名",
+            "作为法官",
+            "作为一位",
+            # 任务指令残留
+            "你的任务",
+            "你的决定",
+            "你的行动",
             "你的下一个",
             "你的问题",
             "你的提问",
             "你的判决",
-            "下一个问题",
-            "下一个调查",
-            "至少3个",
+            # 输出要求残留
+            "请输出",
+            "请提出",
+            "请根据",
+            "请从以下",
+            "请选择",
+            "请回答",
+            "直接输出",
+            "输出要求",
+            "使用规范",
+            "使用法律",
+            # 选择题格式残留
+            "A.",
+            "B.",
+            "C.",
+            "D.",
+            "选项",
+            "选择最相关",
+            # 数量限制残留
+            "至少",
+            "不超过",
             "不超过3个",
+            "至少3个",
+            "1次提问",
+            # 示例格式残留
+            "例如：",
+            "例如",
+            "示例",
+            # 文书标题残留（完整的文书标题）
+            "中级人民法院刑事",
+            "刑事判决书",
+            "刑事裁定书",
+            "起诉书",
+            # 其他指令词
             "需要进一步",
             "需要查明",
             "需要确认",
-            "请提出",
-            "请输出",
-            "直接输出",
-            "使用规范",
-            "输出要求",
-            "任务要求",
-            # 模板符号残留（排除合法的法律文书符号）
-            "【审判庭】",
-            "【审判情况】",
-            "【输出要求】",
-            "【正在处理】",
-            "【任务】",
-            "【你的任务】",
-            "【建议调查】",
-            # 其他模板词
-            "提问：... 或 判决：",
-            "或 判决：",
-            "或 最终判决",
-            "你的决定",
-            "你的行动",
+            "下一个问题",
+            "下一个调查",
+            "办案思路",
+            "分析现有信息",
+            "构建指控",
         ]
         for pattern in residue_patterns:
             if pattern in text:
@@ -451,27 +488,38 @@ class GRPOTrainer:
         return False
 
     def _is_query_semantic(self, text: str) -> bool:
-        """判断是否是提问（语义检测，不强制格式）"""
-        # 问题特征词
+        """判断是否是提问（语义检测，更宽容版）"""
+        # 问题特征词（放宽范围）
         question_words = [
             "什么", "如何", "是否", "为什么", "哪", "怎样", "多少",
             "?", "？", "动机", "手段", "情况", "程度",
             "自首", "赔偿", "认罪", "预谋", "故意",
-            "了解", "询问", "请问", "想问",
+            "了解", "询问", "请问", "想问", "核实",
+            "确认", "查明", "调查", "讯问",
+            # 获取信息的动词
+            "供述", "辩称", "陈述", "说明",
         ]
-        # 判断特征词
-        judgment_words = ["罪名", "判处", "有期徒刑", "拘役", "罚金", "犯", "判决如下"]
+        # 判断特征词（排除）
+        judgment_words = ["判处", "有期徒刑", "拘役", "罚金", "判决如下"]
 
         # 包含问题词 + 不包含判决词 → 提问
         has_question = any(word in text for word in question_words)
         has_judgment = any(word in text for word in judgment_words)
 
+        # 额外检查：如果是获取供述/陈述的回复格式，也算有效query
+        if ("供述" in text or "辩称" in text or "陈述" in text) and "判处" not in text:
+            return True
+
         return has_question and not has_judgment
 
     def _is_judgment_semantic(self, text: str) -> bool:
-        """判断是否是判决（语义检测）"""
+        """判断是否是判决（语义检测，更宽容版）"""
         # 判决必须有明确的判决特征词
-        judgment_words = ["罪名", "判处", "有期徒刑", "拘役", "罚金", "犯", "判决如下", "本院认为"]
+        judgment_words = [
+            "判处", "有期徒刑", "拘役", "罚金",
+            "判决如下", "本院认为", "判决结论",
+            "应当以", "追究刑事责任", "罪名成立",
+        ]
         return any(word in text for word in judgment_words)
 
     def _parse_judgment_semantic(self, text: str) -> Dict:
