@@ -352,10 +352,10 @@ class GRPOTrainer:
         """
         Parse action from generated text.
 
-        新增检测：
+        改进版本：语义检测替代格式检测
         1. 重复输出 → invalid
         2. prompt模板残留 → invalid
-        3. 格式不正确 → invalid
+        3. 语义判断：判断是提问还是判决
 
         Args:
             action_text: Generated text from model
@@ -365,7 +365,7 @@ class GRPOTrainer:
         """
         action_text = action_text.strip()
 
-        # 检测1：重复输出
+        # 检测1：重复输出（保留，这是必要的）
         if self._has_repetition(action_text):
             return {
                 "type": "invalid",
@@ -373,50 +373,122 @@ class GRPOTrainer:
                 "repetition_penalty": -0.3
             }
 
-        # 检测2：prompt模板残留（如"提问：... 或 判决：..."）
-        invalid_patterns = [
-            "提问：... 或 判决：",
-            "提问：... 或：判决",
-            "或 判决：",
-            "或：判决",
-            "你的决定",
-            "你的行动",
-            "【",  # 模板格式符号残留
-        ]
-        for pattern in invalid_patterns:
-            if pattern in action_text:
-                return {
-                    "type": "invalid",
-                    "content": action_text,
-                    "repetition_penalty": -0.2
-                }
-
-        # 检测3：必须以"提问："或"判决："开头
-        if not action_text.startswith("提问") and not action_text.startswith("判决"):
-            # 不是有效格式，视为invalid
+        # 检测2：prompt模板残留（模型复制了模板词）
+        if self._has_template_residue(action_text):
             return {
                 "type": "invalid",
                 "content": action_text,
-                "repetition_penalty": -0.15
+                "repetition_penalty": -0.2
             }
 
-        # 有效格式解析
-        if action_text.startswith("判决"):
-            # 尝试解析判决内容
+        # 检测3：语义判断（替代格式检测）
+        # 优先判断是否是判决（因为判决有明确的特征词）
+        if self._is_judgment_semantic(action_text):
             return {
                 "type": "judge",
-                "content": self._parse_judgment(action_text)
+                "content": self._parse_judgment_semantic(action_text)
             }
-        else:
-            # 提问格式
+
+        # 判断是否是提问
+        if self._is_query_semantic(action_text):
             return {
                 "type": "query",
                 "content": action_text
             }
 
+        # 无法判断 → invalid（惩罚降低，因为可能只是格式问题）
+        return {
+            "type": "invalid",
+            "content": action_text,
+            "repetition_penalty": -0.05
+        }
+
+    def _has_template_residue(self, text: str) -> bool:
+        """检测模板残留词"""
+        residue_patterns = [
+            "你的问题",
+            "你的提问",
+            "你的判决",
+            "直接输出",
+            "提问：... 或 判决：",
+            "或 判决：",
+            "你的决定",
+            "你的行动",
+            "示例：提问",
+            "调查提问：",
+            "判决结论：",
+        ]
+        for pattern in residue_patterns:
+            if pattern in text:
+                return True
+        return False
+
+    def _is_query_semantic(self, text: str) -> bool:
+        """判断是否是提问（语义检测，不强制格式）"""
+        # 问题特征词
+        question_words = [
+            "什么", "如何", "是否", "为什么", "哪", "怎样", "多少",
+            "?", "？", "动机", "手段", "情况", "程度",
+            "自首", "赔偿", "认罪", "预谋", "故意",
+            "了解", "询问", "请问", "想问",
+        ]
+        # 判断特征词
+        judgment_words = ["罪名", "判处", "有期徒刑", "拘役", "罚金", "犯", "判决如下"]
+
+        # 包含问题词 + 不包含判决词 → 提问
+        has_question = any(word in text for word in question_words)
+        has_judgment = any(word in text for word in judgment_words)
+
+        return has_question and not has_judgment
+
+    def _is_judgment_semantic(self, text: str) -> bool:
+        """判断是否是判决（语义检测）"""
+        # 判决必须有明确的判决特征词
+        judgment_words = ["罪名", "判处", "有期徒刑", "拘役", "罚金", "犯", "判决如下", "本院认为"]
+        return any(word in text for word in judgment_words)
+
+    def _parse_judgment_semantic(self, text: str) -> Dict:
+        """语义解析判决内容"""
+        judgment = {
+            "crime": "",
+            "sentence_months": 0,
+            "laws": []
+        }
+
+        # 提取罪名
+        crime_patterns = [
+            r"犯(\w+罪)",
+            r"罪名[：:]\s*(\w+)",
+            r"(\w+罪)",
+        ]
+        for pattern in crime_patterns:
+            match = re.search(pattern, text)
+            if match:
+                judgment["crime"] = match.group(1).strip()
+                break
+
+        # 提取刑期
+        sentence_patterns = [
+            r"有期徒刑\s*(\d+)\s*年",
+            r"有期徒刑\s*(\d+)\s*个?月",
+            r"拘役\s*(\d+)\s*个?月",
+            r"判处\s*(\d+)\s*年",
+        ]
+        for pattern in sentence_patterns:
+            match = re.search(pattern, text)
+            if match:
+                value = int(match.group(1))
+                if "年" in pattern or pattern.startswith("判处"):
+                    judgment["sentence_months"] = value * 12
+                else:
+                    judgment["sentence_months"] = value
+                break
+
+        return judgment
+
     def _has_repetition(self, text: str) -> bool:
         """
-        检测输出是否有重复循环
+        检测输出是否有重复循环（改进中文检测）
 
         Args:
             text: 输出文本
@@ -424,63 +496,49 @@ class GRPOTrainer:
         Returns:
             True if repetition detected
         """
-        if len(text) < 20:
+        if len(text) < 10:  # 降低阈值
             return False
 
-        # 1. 检查句子重复（以句号分隔）
-        sentences = re.split(r'[。，]', text)
-        sentences = [s.strip() for s in sentences if s.strip()]
+        # 1. 检查句子重复（中文标点分隔）
+        sentences = re.split(r'[。，！？；]', text)
+        sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 3]
 
-        if len(sentences) >= 3:
-            # 检查是否有连续2个以上相同句子
+        if len(sentences) >= 2:
+            # 检查是否有连续相同句子
             for i in range(len(sentences) - 1):
-                if sentences[i] == sentences[i + 1] and len(sentences[i]) > 10:
+                if sentences[i] == sentences[i + 1]:
                     return True
+            # 检查是否有超过50%相同的句子
+            unique_count = len(set(sentences))
+            if len(sentences) >= 3 and unique_count < len(sentences) * 0.5:
+                return True
 
-        # 2. 检查短语重复（如"判决：罪名：..."重复出现）
-        pattern = r'(.{15,}?)[。，\s]*\1'
+        # 2. 检查短语重复（降低最小长度）
+        pattern = r'(.{8,}?)[。，\s]*\1'
         if re.search(pattern, text):
             return True
 
-        # 3. 检查单词重复比例
-        words = text.split()
-        if len(words) >= 10:
-            word_counts = {}
-            for word in words:
-                if len(word) > 3:
-                    word_counts[word] = word_counts.get(word, 0) + 1
-
-            for word, count in word_counts.items():
-                if count / len(words) > 0.3:
+        # 3. 检查问号分割重复
+        if '?' in text or '？' in text:
+            parts = re.split(r'[？?]', text)
+            parts = [p.strip() for p in parts if p.strip()]
+            if len(parts) >= 2:
+                unique_parts = set(parts)
+                if len(unique_parts) < len(parts) * 0.6:
                     return True
 
+        # 4. 检查子串重复（关键：无分隔符的重复）
+        # 遍历不同长度的子串，检测是否重复出现
+        text_len = len(text)
+        for length in range(min(12, text_len // 2), 3, -1):  # 从长到短
+            seen = set()
+            for i in range(text_len - length + 1):
+                substring = text[i:i+length]
+                if substring in seen:
+                    return True
+                seen.add(substring)
+
         return False
-
-    def _parse_judgment(self, text: str) -> Dict:
-        """解析判决内容"""
-        # 简化解析，返回基本结构
-        judgment = {
-            "crime": "",
-            "sentence_months": 0,
-            "laws": []
-        }
-
-        # 尝试提取罪名
-        import re
-        crime_match = re.search(r"罪名[：:]\s*([^\n，。]+)", text)
-        if crime_match:
-            judgment["crime"] = crime_match.group(1).strip()
-
-        # 尝试提取刑期
-        sentence_match = re.search(r"有期徒刑\s*(\d+)\s*年", text)
-        if sentence_match:
-            judgment["sentence_months"] = int(sentence_match.group(1)) * 12
-        else:
-            sentence_match = re.search(r"有期徒刑\s*(\d+)\s*个?月", text)
-            if sentence_match:
-                judgment["sentence_months"] = int(sentence_match.group(1))
-
-        return judgment
 
     def _build_prompt(self, state: Dict) -> str:
         """
@@ -529,41 +587,49 @@ class GRPOTrainer:
         else:
             revealed_text = "暂无"
 
-        # ========== 4. 根据轮次构建指令 ==========
+        # ========== 4. 根据轮次构建指令（使用SFT模型熟悉的格式）==========
         if current_round == 0:
-            # 第1轮：强制提问
-            instruction = """【第1轮：必须提问】
-请针对案情提问，获取关键证据细节（如作案动机、作案手段、案后表现等）。
-示例：提问：被告人的作案动机是什么？"""
+            # 第1轮：强制提问调查
+            instruction = """【调查阶段】
+案情信息不完整，请通过提问获取关键证据。
+可关注：作案动机、作案手段、伤害程度、案后表现等。
+
+请直接提出问题，例如：
+- 被告人的作案动机是什么？
+- 作案时使用了什么工具？
+- 被告人是否有自首情节？"""
         elif current_round < 3:
             # 前3轮：优先提问
-            instruction = """【优先提问】
-请继续提问获取更多证据。
-示例：提问：被告人是否有自首情节？"""
+            instruction = """【继续调查】
+请继续提问获取更多证据细节。
+可关注尚未了解的方面。"""
         else:
             # 后续轮：可以判决
             instruction = """【可以判决】
-如果证据充分，可给出判决。
-示例：判决：罪名：诈骗罪，刑期：36个月"""
+如果证据充分，请给出判决结论。
+需包含：罪名、刑期、法律依据。
+
+例如：
+被告人犯故意伤害罪，判处有期徒刑三年。"""
 
         # ========== 5. 构建prompt（预估token数）==========
         # 案情部分（约100-200 tokens）
-        case_section = f"案情摘要：{public_info[:150]}..." if len(public_info) > 150 else f"案情摘要：{public_info}"
+        case_section = f"【案情】\n{public_info[:150]}..." if len(public_info) > 150 else f"【案情】\n{public_info}"
 
         # 对话历史部分（约200-400 tokens）
         if history_summary:
-            history_section = f"\n\n近期对话：\n{history_summary}"
+            history_section = f"\n\n【近期对话】\n{history_summary}"
         else:
             history_section = ""
 
         # 证据部分（约100 tokens）
-        evidence_section = f"\n\n已获取证据：\n{revealed_text}"
+        evidence_section = f"\n\n【已获取信息】\n{revealed_text}"
 
         prompt = f"""{case_section}{history_section}{evidence_section}
 
 {instruction}
 
-请直接输出你的提问或判决："""
+请输出："""
 
         # 预估prompt长度（粗略估算：1 token ≈ 1.5 中文字符）
         estimated_tokens = len(prompt) / 1.5
