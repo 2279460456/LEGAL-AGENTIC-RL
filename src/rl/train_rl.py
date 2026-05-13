@@ -67,17 +67,19 @@ def create_grpo_config(yaml_config: Dict) -> GRPOConfig:
 
     return GRPOConfig(
         group_size=grpo_section.get("group_size", 4),
-        temperature=grpo_section.get("temperature", 1.0),
+        temperature=grpo_section.get("temperature", 0.9),
         top_p=grpo_section.get("top_p", 0.9),
         learning_rate=lr_value,
         max_grad_norm=training_section.get("max_grad_norm", 1.0),
-        max_new_tokens=grpo_section.get("max_new_tokens", 256),
+        max_new_tokens=grpo_section.get("max_new_tokens", 128),
         do_sample=grpo_section.get("do_sample", True),
         save_total_limit=training_section.get("save_total_limit", 2),
-        # 新增：上下文长度控制参数
+        # 上下文长度控制参数
         max_prompt_tokens=grpo_section.get("max_prompt_tokens", 1200),
         max_history_rounds=grpo_section.get("max_history_rounds", 3),
-        max_evidence_preview=grpo_section.get("max_evidence_preview", 50)
+        max_evidence_preview=grpo_section.get("max_evidence_preview", 50),
+        # 生成质量控制参数
+        repetition_penalty=grpo_section.get("repetition_penalty", 1.1)
     )
 
 

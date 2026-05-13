@@ -5,7 +5,7 @@
 # GRPO Configuration
 grpo:
   group_size: 4  # [调整] 增加到4，减少reward相同概率
-  temperature: 0.7  # [调整] 从1.0降到0.7，与SFT测试一致
+  temperature: 0.9  # [调整] 提高到0.9，减少重复输出倾向
   top_p: 0.9  # Top-p sampling
   max_turns: 10  # Maximum conversation turns per episode
   early_stop_patience: 5  # Stop if no improvement for N epochs
@@ -16,6 +16,9 @@ grpo:
   max_prompt_tokens: 1200  # Prompt最大token数（为输出留空间）
   max_history_rounds: 3    # 保留最近N轮对话历史
   max_evidence_preview: 50 # 每个证据预览最大字数
+
+  # [新增] 生成质量控制
+  repetition_penalty: 1.1  # 重复惩罚系数（>1减少重复）
 
 # Environment Configuration
 environment:

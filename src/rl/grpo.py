@@ -42,7 +42,7 @@ from torch.optim import AdamW
 class GRPOConfig:
     """GRPO training configuration"""
     group_size: int = 4  # Number of trajectories per group (G)
-    temperature: float = 1.0  # Sampling temperature
+    temperature: float = 0.9  # Sampling temperature（提高到0.9减少重复）
     top_p: float = 0.9  # Top-p sampling threshold
     learning_rate: float = 1e-5  # Policy learning rate
     max_grad_norm: float = 1.0  # Gradient clipping
@@ -56,6 +56,9 @@ class GRPOConfig:
     max_prompt_tokens: int = 1200  # Prompt最大token数（为输出留空间）
     max_history_rounds: int = 3  # 保留最近N轮对话历史
     max_evidence_preview: int = 50  # 每个证据预览最大字数
+
+    # ========== 新增：生成质量控制 ==========
+    repetition_penalty: float = 1.1  # 重复惩罚系数（>1减少重复输出）
 
 
 @dataclass
@@ -311,6 +314,7 @@ class GRPOTrainer:
                 do_sample=self.config.do_sample,
                 temperature=self.config.temperature,
                 top_p=self.config.top_p,
+                repetition_penalty=self.config.repetition_penalty,  # 使用配置中的重复惩罚
                 pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
                 use_cache=True,  # 启用KV cache加速生成
                 return_dict_in_generate=True,
@@ -529,18 +533,18 @@ class GRPOTrainer:
         if current_round == 0:
             # 第1轮：强制提问
             instruction = """【第1轮：必须提问】
-请针对案情提问，获取关键证据细节。
-输出格式：提问：你的问题"""
+请针对案情提问，获取关键证据细节（如作案动机、作案手段、案后表现等）。
+示例：提问：被告人的作案动机是什么？"""
         elif current_round < 3:
             # 前3轮：优先提问
             instruction = """【优先提问】
 请继续提问获取更多证据。
-输出格式：提问：你的问题"""
+示例：提问：被告人是否有自首情节？"""
         else:
             # 后续轮：可以判决
             instruction = """【可以判决】
 如果证据充分，可给出判决。
-输出格式：判决：罪名：XXX，刑期：XXX个月"""
+示例：判决：罪名：诈骗罪，刑期：36个月"""
 
         # ========== 5. 构建prompt（预估token数）==========
         # 案情部分（约100-200 tokens）
@@ -559,7 +563,7 @@ class GRPOTrainer:
 
 {instruction}
 
-直接输出（不要解释）："""
+请直接输出你的提问或判决："""
 
         # 预估prompt长度（粗略估算：1 token ≈ 1.5 中文字符）
         estimated_tokens = len(prompt) / 1.5
