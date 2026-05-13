@@ -404,23 +404,50 @@ class GRPOTrainer:
         }
 
     def _has_template_residue(self, text: str) -> bool:
-        """检测模板残留词"""
+        """检测模板残留词（改进版，覆盖更多残留词）"""
         residue_patterns = [
+            # 指令词残留
+            "你的下一个",
             "你的问题",
             "你的提问",
             "你的判决",
+            "下一个问题",
+            "下一个调查",
+            "至少3个",
+            "不超过3个",
+            "需要进一步",
+            "需要查明",
+            "需要确认",
+            "请提出",
+            "请输出",
             "直接输出",
+            "使用规范",
+            "输出要求",
+            "任务要求",
+            # 模板符号残留（排除合法的法律文书符号）
+            "【审判庭】",
+            "【审判情况】",
+            "【输出要求】",
+            "【正在处理】",
+            "【任务】",
+            "【你的任务】",
+            "【建议调查】",
+            # 其他模板词
             "提问：... 或 判决：",
             "或 判决：",
+            "或 最终判决",
             "你的决定",
             "你的行动",
-            "示例：提问",
-            "调查提问：",
-            "判决结论：",
         ]
         for pattern in residue_patterns:
             if pattern in text:
                 return True
+
+        # 检测是否包含过多的"【】"符号（超过2个可能是模板）
+        bracket_count = text.count("【")
+        if bracket_count > 2:
+            return True
+
         return False
 
     def _is_query_semantic(self, text: str) -> bool:
@@ -587,49 +614,27 @@ class GRPOTrainer:
         else:
             revealed_text = "暂无"
 
-        # ========== 4. 根据轮次构建指令（使用SFT模型熟悉的格式）==========
+        # ========== 4. 根据轮次构建指令（简化版，避免模板词）==========
         if current_round == 0:
-            # 第1轮：强制提问调查
-            instruction = """【调查阶段】
-案情信息不完整，请通过提问获取关键证据。
-可关注：作案动机、作案手段、伤害程度、案后表现等。
-
-请直接提出问题，例如：
-- 被告人的作案动机是什么？
-- 作案时使用了什么工具？
-- 被告人是否有自首情节？"""
+            # 第1轮：调查阶段
+            instruction = "案情信息不完整。请提出问题，了解作案动机、作案手段、伤害程度、案后表现等关键事实。"
         elif current_round < 3:
-            # 前3轮：优先提问
-            instruction = """【继续调查】
-请继续提问获取更多证据细节。
-可关注尚未了解的方面。"""
+            # 前3轮：继续调查
+            instruction = "继续了解案件事实细节。"
         else:
             # 后续轮：可以判决
-            instruction = """【可以判决】
-如果证据充分，请给出判决结论。
-需包含：罪名、刑期、法律依据。
+            instruction = "根据已掌握的证据，给出判决结论（罪名和刑期）。"
 
-例如：
-被告人犯故意伤害罪，判处有期徒刑三年。"""
+        # ========== 5. 构建prompt（简化格式）==========
+        case_section = "案情：%s" % (public_info[:150] if len(public_info) > 150 else public_info)
 
-        # ========== 5. 构建prompt（预估token数）==========
-        # 案情部分（约100-200 tokens）
-        case_section = f"【案情】\n{public_info[:150]}..." if len(public_info) > 150 else f"【案情】\n{public_info}"
-
-        # 对话历史部分（约200-400 tokens）
+        history_section = ""
         if history_summary:
-            history_section = f"\n\n【近期对话】\n{history_summary}"
-        else:
-            history_section = ""
+            history_section = "\n\n对话记录：\n%s" % history_summary
 
-        # 证据部分（约100 tokens）
-        evidence_section = f"\n\n【已获取信息】\n{revealed_text}"
+        evidence_section = "\n\n已了解：\n%s" % revealed_text
 
-        prompt = f"""{case_section}{history_section}{evidence_section}
-
-{instruction}
-
-请输出："""
+        prompt = "%s%s%s\n\n%s\n" % (case_section, history_section, evidence_section, instruction)
 
         # 预估prompt长度（粗略估算：1 token ≈ 1.5 中文字符）
         estimated_tokens = len(prompt) / 1.5
