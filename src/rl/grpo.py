@@ -52,6 +52,11 @@ class GRPOConfig:
     do_sample: bool = True  # Whether to sample (vs greedy)
     save_total_limit: int = 2  # 最多保留几个checkpoint（节省磁盘空间）
 
+    # ========== 新增：上下文长度控制 ==========
+    max_prompt_tokens: int = 1200  # Prompt最大token数（为输出留空间）
+    max_history_rounds: int = 3  # 保留最近N轮对话历史
+    max_evidence_preview: int = 50  # 每个证据预览最大字数
+
 
 @dataclass
 class Trajectory:
@@ -343,6 +348,11 @@ class GRPOTrainer:
         """
         Parse action from generated text.
 
+        新增检测：
+        1. 重复输出 → invalid
+        2. prompt模板残留 → invalid
+        3. 格式不正确 → invalid
+
         Args:
             action_text: Generated text from model
 
@@ -351,21 +361,96 @@ class GRPOTrainer:
         """
         action_text = action_text.strip()
 
-        # 判断是判决还是提问
-        if "判决" in action_text or "裁定" in action_text or "罪名" in action_text:
+        # 检测1：重复输出
+        if self._has_repetition(action_text):
+            return {
+                "type": "invalid",
+                "content": action_text,
+                "repetition_penalty": -0.3
+            }
+
+        # 检测2：prompt模板残留（如"提问：... 或 判决：..."）
+        invalid_patterns = [
+            "提问：... 或 判决：",
+            "提问：... 或：判决",
+            "或 判决：",
+            "或：判决",
+            "你的决定",
+            "你的行动",
+            "【",  # 模板格式符号残留
+        ]
+        for pattern in invalid_patterns:
+            if pattern in action_text:
+                return {
+                    "type": "invalid",
+                    "content": action_text,
+                    "repetition_penalty": -0.2
+                }
+
+        # 检测3：必须以"提问："或"判决："开头
+        if not action_text.startswith("提问") and not action_text.startswith("判决"):
+            # 不是有效格式，视为invalid
+            return {
+                "type": "invalid",
+                "content": action_text,
+                "repetition_penalty": -0.15
+            }
+
+        # 有效格式解析
+        if action_text.startswith("判决"):
             # 尝试解析判决内容
-            action = {
+            return {
                 "type": "judge",
                 "content": self._parse_judgment(action_text)
             }
         else:
-            # 默认为查询
-            action = {
+            # 提问格式
+            return {
                 "type": "query",
                 "content": action_text
             }
 
-        return action
+    def _has_repetition(self, text: str) -> bool:
+        """
+        检测输出是否有重复循环
+
+        Args:
+            text: 输出文本
+
+        Returns:
+            True if repetition detected
+        """
+        if len(text) < 20:
+            return False
+
+        # 1. 检查句子重复（以句号分隔）
+        sentences = re.split(r'[。，]', text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        if len(sentences) >= 3:
+            # 检查是否有连续2个以上相同句子
+            for i in range(len(sentences) - 1):
+                if sentences[i] == sentences[i + 1] and len(sentences[i]) > 10:
+                    return True
+
+        # 2. 检查短语重复（如"判决：罪名：..."重复出现）
+        pattern = r'(.{15,}?)[。，\s]*\1'
+        if re.search(pattern, text):
+            return True
+
+        # 3. 检查单词重复比例
+        words = text.split()
+        if len(words) >= 10:
+            word_counts = {}
+            for word in words:
+                if len(word) > 3:
+                    word_counts[word] = word_counts.get(word, 0) + 1
+
+            for word, count in word_counts.items():
+                if count / len(words) > 0.3:
+                    return True
+
+        return False
 
     def _parse_judgment(self, text: str) -> Dict:
         """解析判决内容"""
@@ -394,43 +479,129 @@ class GRPOTrainer:
         return judgment
 
     def _build_prompt(self, state: Dict) -> str:
-        """Build prompt for model based on state"""
+        """
+        Build prompt for model based on state.
+
+        改进版本：
+        1. 控制对话历史长度（避免上下文爆炸）
+        2. 压缩证据内容为摘要
+        3. 总token数预估（控制在1500以内，为输出留空间）
+
+        Qwen3-8B 建议总长度 < 2048（训练时）
+        """
         public_info = state.get('public_info', '')
         revealed = state.get('revealed_evidence', [])
         current_round = state.get('current_round', 0)
         max_rounds = state.get('max_rounds', 10)
+        conversation_history = state.get('conversation_history', [])
 
-        # 限制revealed文本长度，避免prompt过长
-        revealed_text = "\n".join(revealed[-3:]) if revealed else "暂无"  # 只显示最近3条
+        # ========== 1. 对话历史截断（保留最近N轮）==========
+        # 每轮包含法官提问+控辩回复，约200-400 tokens
+        max_history_rounds = self.config.max_history_rounds
+        recent_history = conversation_history[-(max_history_rounds * 2):]  # 每轮2条消息
 
-        # 根据轮次调整提示，让模型在后期更倾向于判决
-        remaining_rounds = max_rounds - current_round
-        urgency_hint = ""
-        if remaining_rounds <= 2:
-            urgency_hint = "\n【重要提示】剩余轮次较少，如果已有基本证据，请尽快给出判决！"
-        elif remaining_rounds <= 5:
-            urgency_hint = "\n【提示】时间有限，请权衡是否需要继续提问或现在判决。"
+        # ========== 2. 压缩对话历史为摘要格式 ==========
+        history_summary = ""
+        max_preview = self.config.max_evidence_preview
+        if recent_history:
+            # 按轮次组织
+            history_items = []
+            for role, msg in recent_history:
+                # 截断过长内容
+                msg_preview = msg[:max_preview] + "..." if len(msg) > max_preview else msg
+                role_label = {"judge": "法官", "prosecutor": "公诉人", "defender": "辩护人"}.get(role, role)
+                history_items.append(f"[{role_label}]: {msg_preview}")
+            history_summary = "\n".join(history_items[-6:])  # 最多6条
 
-        prompt = f"""你是一位资深法官，正在审理案件。你的任务是：
-1. 分析案情和证据
-2. 通过提问获取必要的证据细节
-3. 当证据充分时给出判决
+        # ========== 3. 压缩已收集证据 ==========
+        # 证据内容可能很长，需要压缩
+        if revealed:
+            # 只保留最近2个证据，每个截断
+            evidence_summary = []
+            for ev in revealed[-2:]:
+                ev_short = ev[:max_preview] + "..." if len(ev) > max_preview else ev
+                evidence_summary.append(ev_short)
+            revealed_text = "\n".join(evidence_summary)
+        else:
+            revealed_text = "暂无"
 
-当前案情：{public_info}
+        # ========== 4. 根据轮次构建指令 ==========
+        if current_round == 0:
+            # 第1轮：强制提问
+            instruction = """【第1轮：必须提问】
+请针对案情提问，获取关键证据细节。
+输出格式：提问：你的问题"""
+        elif current_round < 3:
+            # 前3轮：优先提问
+            instruction = """【优先提问】
+请继续提问获取更多证据。
+输出格式：提问：你的问题"""
+        else:
+            # 后续轮：可以判决
+            instruction = """【可以判决】
+如果证据充分，可给出判决。
+输出格式：判决：罪名：XXX，刑期：XXX个月"""
 
-已获取证据：
-{revealed_text}
+        # ========== 5. 构建prompt（预估token数）==========
+        # 案情部分（约100-200 tokens）
+        case_section = f"案情摘要：{public_info[:150]}..." if len(public_info) > 150 else f"案情摘要：{public_info}"
 
-当前轮次：第{current_round}轮（剩余{remaining_rounds}轮）
-{urgency_hint}
+        # 对话历史部分（约200-400 tokens）
+        if history_summary:
+            history_section = f"\n\n近期对话：\n{history_summary}"
+        else:
+            history_section = ""
 
-请决定下一步行动：
-- 如果需要更多证据，请提问（格式：提问：...）
-- 如果证据充分，请判决（格式：判决：罪名：XXX，刑期：XXX）
+        # 证据部分（约100 tokens）
+        evidence_section = f"\n\n已获取证据：\n{revealed_text}"
 
-请直接输出："""
+        prompt = f"""{case_section}{history_section}{evidence_section}
+
+{instruction}
+
+直接输出（不要解释）："""
+
+        # 预估prompt长度（粗略估算：1 token ≈ 1.5 中文字符）
+        estimated_tokens = len(prompt) / 1.5
+        if estimated_tokens > self.config.max_prompt_tokens:
+            # 如果超出限制，进一步压缩
+            prompt = self._compress_prompt_further(prompt, max_tokens=self.config.max_prompt_tokens)
 
         return prompt
+
+    def _compress_prompt_further(self, prompt: str, max_tokens: int = 1200) -> str:
+        """
+        进一步压缩prompt，确保不超过token限制。
+
+        Args:
+            prompt: 原始prompt
+            max_tokens: 目标最大token数
+
+        Returns:
+            压缩后的prompt
+        """
+        max_chars = max_tokens * 1.5  # 粗略估算
+
+        # 提取关键部分
+        parts = prompt.split("\n\n")
+
+        # 保留指令部分（最后部分）
+        instruction_part = parts[-1] if parts else ""
+
+        # 压缩其他部分
+        compressed_parts = []
+        remaining_chars = max_chars - len(instruction_part)
+
+        for part in parts[:-1]:
+            if remaining_chars > 0:
+                if len(part) > remaining_chars:
+                    compressed_parts.append(part[:int(remaining_chars)] + "...")
+                    remaining_chars = 0
+                else:
+                    compressed_parts.append(part)
+                    remaining_chars -= len(part)
+
+        return "\n\n".join(compressed_parts) + "\n\n" + instruction_part
 
     def _state_to_dict(self, state) -> Dict:
         """Convert state object to dictionary"""
@@ -438,6 +609,7 @@ class GRPOTrainer:
             return {
                 "public_info": state.public_info,
                 "revealed_evidence": state.revealed_evidence,
+                "conversation_history": getattr(state, 'conversation_history', []),
                 "current_round": state.current_round,
                 "max_rounds": state.max_rounds
             }

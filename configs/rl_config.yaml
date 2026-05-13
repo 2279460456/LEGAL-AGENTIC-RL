@@ -12,6 +12,11 @@ grpo:
   max_new_tokens: 128  # [调整] 从64增加到128，给模型更多生成空间
   do_sample: true
 
+  # [新增] 上下文长度控制（防止上下文爆炸）
+  max_prompt_tokens: 1200  # Prompt最大token数（为输出留空间）
+  max_history_rounds: 3    # 保留最近N轮对话历史
+  max_evidence_preview: 50 # 每个证据预览最大字数
+
 # Environment Configuration
 environment:
   evidence_levels:

@@ -73,7 +73,11 @@ def create_grpo_config(yaml_config: Dict) -> GRPOConfig:
         max_grad_norm=training_section.get("max_grad_norm", 1.0),
         max_new_tokens=grpo_section.get("max_new_tokens", 256),
         do_sample=grpo_section.get("do_sample", True),
-        save_total_limit=training_section.get("save_total_limit", 2)
+        save_total_limit=training_section.get("save_total_limit", 2),
+        # 新增：上下文长度控制参数
+        max_prompt_tokens=grpo_section.get("max_prompt_tokens", 1200),
+        max_history_rounds=grpo_section.get("max_history_rounds", 3),
+        max_evidence_preview=grpo_section.get("max_evidence_preview", 50)
     )
 
 

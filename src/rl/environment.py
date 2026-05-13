@@ -10,9 +10,63 @@ This module provides:
 
 import json
 import random
+import re
 from typing import Dict, List, Optional, Tuple, Set
 from dataclasses import dataclass, field
 from enum import Enum
+from collections import Counter
+
+
+def compute_rouge_similarity(text1: str, text2: str) -> float:
+    """
+    基于F1分数的ROUGE相似度计算
+
+    用途：
+    - 罪名相似度评估（如"故意伤害" vs "故意伤害致死"）
+
+    Args:
+        text1: 第一个文本
+        text2: 第二个文本
+
+    Returns:
+        0-1范围的相似度分数
+    """
+    if not text1 or not text2:
+        return 0.0
+
+    try:
+        import jieba
+        words1 = jieba.lcut(text1)
+        words2 = jieba.lcut(text2)
+    except ImportError:
+        # 如果jieba不可用，用简单的字符分割（适合中文罪名）
+        # 将文本分割成2-4字的词组
+        words1 = []
+        words2 = []
+        # 按常见中文词长度分割
+        for i in range(len(text1)):
+            for length in [4, 3, 2, 1]:
+                if i + length <= len(text1):
+                    words1.append(text1[i:i+length])
+        for i in range(len(text2)):
+            for length in [4, 3, 2, 1]:
+                if i + length <= len(text2):
+                    words2.append(text2[i:i+length])
+
+    if len(words1) == 0 or len(words2) == 0:
+        return 0.0
+
+    count1 = Counter(words1)
+    count2 = Counter(words2)
+
+    common = count1 & count2
+    num_common = sum(common.values())
+
+    precision = num_common / len(words1)
+    recall = num_common / len(words2)
+
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    return f1
 
 
 class AgentAction(Enum):
@@ -122,6 +176,12 @@ class EvidenceEnvironment:
         self.current_round: int = 0
         self.final_prediction: Optional[Dict] = None
 
+        # 动作追踪（用于人工审核和训练分析）
+        self._all_actions: List[Dict] = []          # 所有动作历史
+        self._valid_actions: List[Dict] = []        # 有效格式动作
+        self._effective_actions: List[Dict] = []    # 触发证据的动作
+        self._invalid_actions: List[Dict] = []      # 无效动作记录
+
     def reset(self, case_data: Dict) -> AgentState:
         """
         Reset environment with new case.
@@ -142,6 +202,12 @@ class EvidenceEnvironment:
         self.conversation_history = []
         self.current_round = 0
         self.final_prediction = None
+
+        # 重置动作追踪
+        self._all_actions = []
+        self._valid_actions = []
+        self._effective_actions = []
+        self._invalid_actions = []
 
         return self._get_state()
 
@@ -168,27 +234,135 @@ class EvidenceEnvironment:
             self.final_prediction is not None
         )
 
+    def _track_action(self, action: Dict, result: StepResult):
+        """
+        记录每个动作的执行结果（用于人工审核和训练分析）
+
+        Args:
+            action: 执行的动作
+            result: 动作执行结果
+        """
+        record = {
+            "round": self.current_round,
+            "type": action.get("type"),
+            "content_preview": str(action.get("content", ""))[:50],
+            "reward": result.reward,
+            "triggered": result.new_evidence is not None,
+            "is_valid": not result.info.get("invalid", False),
+            "reason": result.info.get("reason", "")
+        }
+
+        self._all_actions.append(record)
+
+        if record["is_valid"]:
+            self._valid_actions.append(record)
+            if record["triggered"]:
+                self._effective_actions.append(record)
+        else:
+            self._invalid_actions.append(record)
+
+    def get_action_statistics(self) -> Dict:
+        """
+        生成动作统计报告
+
+        用于：
+        - 训练统计分析
+        - 人工审核/debug
+        - 精细reward分析
+
+        Returns:
+            统计报告字典
+        """
+        total = len(self._all_actions)
+        valid_count = len(self._valid_actions)
+        effective_count = len(self._effective_actions)
+        invalid_count = len(self._invalid_actions)
+
+        return {
+            "case_id": self.case_data.get("case_id", ""),
+            "total_actions": total,
+            "valid_count": valid_count,
+            "effective_count": effective_count,
+            "invalid_count": invalid_count,
+            "valid_rate": valid_count / max(total, 1),
+            "effective_rate": effective_count / max(total, 1),
+            "invalid_details": self._invalid_actions,  # 用于人工审核
+            "evidence_discovered": list(self.revealed_levels),
+            "final_reward": self.get_final_reward() if self.final_prediction else 0
+        }
+
     def step(self, action: Dict) -> StepResult:
         """
         Execute one step in environment.
 
         Args:
             action: Dictionary with 'type' and 'content'
-                - type: "query" or "judge"
-                - content: query text or judgment dict
+                - type: "query", "judge", or "invalid"
+                - content: query text, judgment dict, or invalid text
+                - repetition_penalty: (optional) penalty for invalid actions
 
         Returns:
             StepResult with new state, reward, etc.
         """
         action_type = action.get("type")
         content = action.get("content")
+        repetition_penalty = action.get("repetition_penalty", 0.0)
 
         if action_type == "query":
-            return self._handle_query(content)
+            result = self._handle_query(content)
         elif action_type == "judge":
-            return self._handle_judge(content)
+            result = self._handle_judge(content)
+        elif action_type == "invalid":
+            result = self._handle_invalid(content, repetition_penalty)
         else:
             raise ValueError(f"Unknown action type: {action_type}")
+
+        # 追踪动作执行结果
+        self._track_action(action, result)
+
+        return result
+
+    def _handle_invalid(self, content: str, repetition_penalty: float) -> StepResult:
+        """
+        Handle an invalid action (repetitive/collapsed output).
+
+        给予惩罚性reward，但不终止episode，让模型有机会修正。
+
+        Args:
+            content: Invalid action text
+            repetition_penalty: Penalty value (default -0.2)
+
+        Returns:
+            StepResult with negative reward
+        """
+        self.current_round += 1
+        self.conversation_history.append(("judge", f"[无效输出] {content[:50]}"))
+
+        # 直接应用惩罚
+        reward = repetition_penalty  # 通常是 -0.2
+
+        state = self._get_state()
+
+        # 如果连续无效输出超过3次，强制终止
+        invalid_count = sum(1 for role, msg in self.conversation_history if "无效输出" in msg)
+        if invalid_count >= 3:
+            # 强制给出默认判决（失败）
+            self.final_prediction = {"crime": "", "sentence_months": 0, "laws": []}
+            return StepResult(
+                state=state,
+                reward=reward - 0.3,  # 额外惩罚：连续失败
+                new_evidence=None,
+                is_terminal=True,
+                info={"reason": "连续无效输出终止"}
+            )
+
+        return StepResult(
+            state=state,
+            reward=reward,
+            new_evidence=None,
+            is_terminal=False,
+            info={"invalid": True, "repetition_penalty": repetition_penalty}
+        )
 
     def _handle_query(self, query: str) -> StepResult:
         """Handle a query action"""
@@ -197,6 +371,18 @@ class EvidenceEnvironment:
 
         # Check if query triggers hidden evidence
         new_evidence = self._check_trigger(query)
+
+        # 【新增】将控辩回复也加入对话历史
+        if new_evidence:
+            # 判断是控方还是辩方回复（基于证据层级）
+            # 已在 _format_evidence_as_dialogue 中格式化，需要提取角色
+            if "公诉人" in new_evidence:
+                role = "prosecutor"
+            elif "辩护人" in new_evidence:
+                role = "defender"
+            else:
+                role = "unknown"
+            self.conversation_history.append((role, new_evidence))
 
         # Calculate step reward
         reward = self._calculate_step_reward(
@@ -215,7 +401,25 @@ class EvidenceEnvironment:
         )
 
     def _handle_judge(self, judgment: Dict) -> StepResult:
-        """Handle a judgment action"""
+        """
+        Handle a judgment action.
+
+        新增规则：第1轮禁止判决，强制先调查
+        """
+        # 【关键规则】第1轮禁止判决，强制先调查
+        if self.current_round == 0:
+            # 第1轮尝试判决 → 拒绝，转为query惩罚
+            self.current_round += 1
+            self.conversation_history.append(("judge", f"[拒绝判决-第1轮] {judgment}"))
+
+            return StepResult(
+                state=self._get_state(),
+                reward=-0.3,  # 早判惩罚
+                new_evidence=None,
+                is_terminal=False,
+                info={"rejected": True, "reason": "第1轮禁止判决，请先提问调查"}
+            )
+
         self.current_round += 1
         self.final_prediction = judgment
         self.conversation_history.append(("judge", f"判决：{judgment}"))
@@ -233,11 +437,17 @@ class EvidenceEnvironment:
         """
         Check if query triggers hidden evidence.
 
+        改进：证据释放以对话回复格式呈现，模拟控辩双方回答法官提问。
+
+        证据层级与控辩对应关系：
+        - subjective/objective (主观层/客观层) → 控方回复（定罪要素）
+        - sentencing (量刑层) → 辽方回复（从轻情节）
+
         Args:
             query: Query text from agent
 
         Returns:
-            Evidence content if triggered, None otherwise
+            Dialogue-formatted evidence content if triggered, None otherwise
         """
         for level, evidence in self.hidden_evidence.items():
             if level not in self.revealed_levels:
@@ -245,9 +455,47 @@ class EvidenceEnvironment:
 
                 if self._match_triggers(query, triggers):
                     self.revealed_levels.add(level)
-                    return evidence.get("content")
+                    raw_content = evidence.get("content", "")
+                    # 格式化为对话回复
+                    return self._format_evidence_as_dialogue(level, raw_content)
 
         return None
+
+    def _format_evidence_as_dialogue(self, level: str, content: str) -> str:
+        """
+        将证据内容格式化为对话回复格式，模拟控辩双方回答法官提问。
+
+        Args:
+            level: 证据层级 (subjective/objective/sentencing)
+            content: 原始证据内容
+
+        Returns:
+            对话格式的回复文本
+        """
+        # 如果没有证据内容，返回空
+        if not content or content == "无相关信息":
+            # 根据层级选择回复角色
+            if level == "sentencing":
+                return "辩护人：经核实，暂无相关减轻情节信息。"
+            else:
+                return "公诉人：经调查，暂无相关证据信息。"
+
+        # 根据证据层级选择回复角色
+        if level == "subjective":
+            # 主观层 → 控方回复（定罪要素：动机、预谋等）
+            return f"公诉人补充说明：经调查，{content}"
+
+        elif level == "objective":
+            # 客观层 → 控方回复（定罪要素：作案手段、后果等）
+            return f"公诉人补充说明：关于作案情况，{content}"
+
+        elif level == "sentencing":
+            # 量刑层 → 辽方回复（从轻情节：自首、赔偿等）
+            return f"辩护人补充说明：{content}"
+
+        else:
+            # 默认格式
+            return f"补充信息：{content}"
 
     def _match_triggers(self, query: str, triggers: List[str]) -> bool:
         """Match query against trigger keywords"""
@@ -338,30 +586,75 @@ class EvidenceEnvironment:
         """
         Calculate final reward based on judgment accuracy.
 
+        新版reward计算（v5 - 混合相似度 + 详细过程奖励）：
+        - 30% 准确性reward（罪名ROUGE + 刑期误差 + 法条召回）
+        - 40% 信息收集reward（调查深度）
+        - 30% 过程reward/惩罚
+
+        关键改进：
+        1. ROUGE相似度用于罪名评估
+        2. 调查深度奖励（每层+0.1）
+        3. 早判惩罚（第1轮判决且无调查 → -0.5）
+        4. 效率奖励（3轮内且有调查 → +0.1）
+
         Returns:
             Final reward value
         """
         if not self.final_prediction:
-            return 0.0
+            return -0.5  # 没有判决，严重失败
 
         prediction = self.final_prediction
         truth = self.ground_truth
 
-        # Accuracy reward
+        # ========== 1. 准确性奖励 (30%) ==========
         accuracy_reward = self._calculate_accuracy_reward(prediction, truth)
 
-        # Compliance reward
-        compliance_reward = self._calculate_compliance_reward()
+        # ========== 2. 信息收集奖励 (40% - 核心) ==========
+        total_levels = len(self.hidden_evidence)
+        discovered_levels = len(self.revealed_levels)
+        if total_levels > 0:
+            discovered_ratio = discovered_levels / total_levels
+            info_reward = discovered_ratio  # 0-1
+            # 每层额外奖励
+            info_reward += 0.1 * discovered_levels
+        else:
+            discovered_ratio = 0.0
+            info_reward = 0
 
-        # Information efficiency reward
-        info_reward = self._calculate_information_reward()
+        # ========== 3. 过程奖励/惩罚 ==========
+        process_reward = 0.0
 
-        # Total reward with weights
-        total = (
-            0.5 * accuracy_reward +
-            0.3 * info_reward +
-            0.2 * compliance_reward
-        )
+        # 3.1 早判惩罚（第1轮判决且无调查）
+        if self.current_round == 1 and discovered_levels == 0:
+            process_reward -= 0.5
+
+        # 3.2 过早判决惩罚（未收集足够证据）
+        elif total_levels > 0 and discovered_ratio < 0.5:
+            penalty = -0.2 * (1 - discovered_ratio)
+            process_reward += penalty
+
+        # 3.3 判决格式有效性检查
+        if prediction:
+            crime = prediction.get("crime", "")
+            if not crime or len(crime) < 2:
+                process_reward -= 0.2  # 罪名提取失败
+
+            if prediction.get("sentence_months", 0) <= 0:
+                process_reward -= 0.1  # 刑期提取失败
+
+        # 3.4 效率奖励（3轮内且有调查）
+        if self.current_round <= 3 and discovered_levels >= 1:
+            process_reward += 0.1
+
+        # 3.5 最大轮次惩罚
+        if self.current_round >= self.max_rounds:
+            process_reward -= 0.2
+
+        # ========== 4. 最终计算 ==========
+        total = 0.3 * accuracy_reward + 0.4 * info_reward + process_reward
+
+        # 范围 [-1.0, 1.5]
+        total = max(-1.0, min(1.5, total))
 
         return total
 
@@ -370,24 +663,42 @@ class EvidenceEnvironment:
         prediction: Dict,
         truth: Dict
     ) -> float:
-        """Calculate accuracy reward"""
-        # Crime F1 (placeholder)
-        crime_score = 1.0 if prediction.get("crime") == truth.get("crime") else 0.5
+        """
+        混合相似度计算准确性reward
 
-        # Sentence error
+        组成：
+        - 罪名：ROUGE F1 (权重40%)
+        - 刑期：相对误差 (权重30%)
+        - 法条：集合召回率 (权重30%)
+        """
+        # 1. 罪名相似度（ROUGE）
+        pred_crime = prediction.get("crime", "")
+        true_crime = truth.get("crime", "")
+        crime_sim = compute_rouge_similarity(pred_crime, true_crime)
+        crime_reward = 0.4 * crime_sim
+
+        # 2. 刑期准确度（相对误差）
         pred_months = prediction.get("sentence_months", 0)
         true_months = truth.get("sentence_months", 0)
-        sentence_score = 1 - abs(pred_months - true_months) / max(true_months, 1)
+        if true_months > 0:
+            sentence_error = abs(pred_months - true_months) / true_months
+            sentence_reward = 0.3 * (1 - min(sentence_error, 1))
+        else:
+            sentence_reward = 0
 
-        # Law recall
+        # 3. 法条召回率（集合匹配）
         pred_laws = set(prediction.get("laws", []))
         true_laws = set(truth.get("laws", []))
-        law_score = len(pred_laws & true_laws) / max(len(true_laws), 1)
+        if len(true_laws) > 0:
+            law_recall = len(pred_laws & true_laws) / len(true_laws)
+            law_reward = 0.3 * law_recall
+        else:
+            law_reward = 0
 
-        return 0.4 * crime_score + 0.3 * sentence_score + 0.3 * law_score
+        return crime_reward + sentence_reward + law_reward
 
     def _calculate_compliance_reward(self) -> float:
-        """Calculate compliance reward"""
+        """Calculate compliance reward (deprecated, now in get_final_reward)"""
         score = 0.0
 
         # Check legal terminology usage
@@ -405,7 +716,7 @@ class EvidenceEnvironment:
         return max(0, score)
 
     def _calculate_information_reward(self) -> float:
-        """Calculate information gathering efficiency reward"""
+        """Calculate information gathering efficiency reward (deprecated)"""
         # Proportion of evidence discovered
         total_levels = len(self.hidden_evidence)
         if total_levels == 0:
@@ -417,6 +728,75 @@ class EvidenceEnvironment:
         efficiency = discovered / max(self.current_round, 1)
 
         return efficiency
+
+    def _has_repetition(self, text: str) -> bool:
+        """
+        检测输出是否有重复循环
+
+        Args:
+            text: 输出文本
+
+        Returns:
+            True if repetition detected
+        """
+        if len(text) < 20:
+            return False
+
+        # 1. 检查句子重复（以句号分隔）
+        sentences = re.split(r'[。，]', text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        if len(sentences) >= 3:
+            # 检查是否有连续2个以上相同句子
+            for i in range(len(sentences) - 1):
+                if sentences[i] == sentences[i + 1] and len(sentences[i]) > 10:
+                    return True
+
+        # 2. 检查短语重复（如"判决：罪名：..."重复出现）
+        # 匹配模式：相同短语重复出现
+        pattern = r'(.{15,}?)[。，\s]*\1'
+        if re.search(pattern, text):
+            return True
+
+        # 3. 检查单词/短语重复比例
+        words = text.split()
+        if len(words) >= 10:
+            # 统计重复词（长度>3的词）
+            word_counts = {}
+            for word in words:
+                if len(word) > 3:
+                    word_counts[word] = word_counts.get(word, 0) + 1
+
+            # 如果某个词出现超过30%的比例，认为有重复
+            for word, count in word_counts.items():
+                if count / len(words) > 0.3:
+                    return True
+
+        return False
+
+    def _has_valid_format(self, text: str) -> bool:
+        """
+        检测输出格式是否正确
+
+        Args:
+            text: 输出文本
+
+        Returns:
+            True if format is valid
+        """
+        # 必须包含"判决"关键词
+        if "判决" not in text:
+            return False
+
+        # 必须包含罪名相关词
+        if "罪名" not in text and "犯" not in text:
+            return False
+
+        # 不能有明显的重复
+        if self._has_repetition(text):
+            return False
+
+        return True
 
     def get_prediction(self) -> Optional[Dict]:
         """Get final prediction"""
