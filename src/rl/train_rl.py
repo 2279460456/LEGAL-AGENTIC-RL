@@ -61,7 +61,7 @@ def create_grpo_config(yaml_config: Dict) -> GRPOConfig:
     training_section = yaml_config.get("training", {})
 
     # 确保learning_rate是float类型
-    lr_value = training_section.get("learning_rate", 1e-5)
+    lr_value = training_section.get("learning_rate", 5e-6)
     if isinstance(lr_value, str):
         lr_value = float(lr_value)
 
@@ -70,7 +70,7 @@ def create_grpo_config(yaml_config: Dict) -> GRPOConfig:
         temperature=grpo_section.get("temperature", 0.9),
         top_p=grpo_section.get("top_p", 0.9),
         learning_rate=lr_value,
-        max_grad_norm=training_section.get("max_grad_norm", 1.0),
+        max_grad_norm=training_section.get("max_grad_norm", 0.1),
         max_new_tokens=grpo_section.get("max_new_tokens", 128),
         do_sample=grpo_section.get("do_sample", True),
         save_total_limit=training_section.get("save_total_limit", 2),
@@ -79,7 +79,18 @@ def create_grpo_config(yaml_config: Dict) -> GRPOConfig:
         max_history_rounds=grpo_section.get("max_history_rounds", 3),
         max_evidence_preview=grpo_section.get("max_evidence_preview", 50),
         # 生成质量控制参数
-        repetition_penalty=grpo_section.get("repetition_penalty", 1.1)
+        repetition_penalty=grpo_section.get("repetition_penalty", 1.1),
+        # 新增：优化器参数
+        weight_decay=training_section.get("weight_decay", 0.1),
+        adam_beta1=training_section.get("adam_beta1", 0.9),
+        adam_beta2=training_section.get("adam_beta2", 0.99),
+        warmup_ratio=training_section.get("warmup_ratio", 0.1),
+        lr_scheduler_type=training_section.get("lr_scheduler_type", "cosine"),
+        optim=training_section.get("optim", "paged_adamw_8bit"),
+        gradient_accumulation_steps=training_section.get("gradient_accumulation_steps", 4),
+        # 新增：生成长度控制
+        max_prompt_length=grpo_section.get("max_prompt_length", 2048),
+        max_completion_length=grpo_section.get("max_completion_length", 512)
     )
 
 
@@ -129,6 +140,9 @@ def train_grpo(
         reward_calculator=reward_calc,
         environment=env
     )
+
+    # Setup LR scheduler
+    trainer.setup_scheduler(num_episodes - resume_episode)
 
     # Training loop
     training_config = config.get("training", {})

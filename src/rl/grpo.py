@@ -60,6 +60,19 @@ class GRPOConfig:
     # ========== 新增：生成质量控制 ==========
     repetition_penalty: float = 1.1  # 重复惩罚系数（>1减少重复输出）
 
+    # ========== 新增：优化器参数（提升训练稳定性）==========
+    weight_decay: float = 0.1  # 权重衰减，防止过拟合
+    adam_beta1: float = 0.9  # Adam动量参数
+    adam_beta2: float = 0.99  # Adam动量参数（比默认0.999更小，适应RL梯度波动）
+    warmup_ratio: float = 0.1  # warmup比例
+    lr_scheduler_type: str = "cosine"  # 学习率调度类型
+    optim: str = "paged_adamw_8bit"  # 优化器类型（节省显存）
+    gradient_accumulation_steps: int = 4  # 梯度累积步数（等效batch_size=4）
+
+    # ========== 新增：生成长度控制 ==========
+    max_prompt_length: int = 2048  # Prompt最大长度
+    max_completion_length: int = 512  # 生成最大长度（保守值）
+
 
 @dataclass
 class Trajectory:
@@ -128,13 +141,70 @@ class GRPOTrainer:
                 )
             trainable_param_count = sum(p.numel() for p in trainable_params)
             print(f"Creating optimizer for {trainable_param_count} trainable parameters")
-            self.optimizer = AdamW(trainable_params, lr=self.config.learning_rate)
+
+            # 根据配置选择优化器
+            if self.config.optim == "paged_adamw_8bit":
+                try:
+                    import bitsandbytes as bnb
+                    self.optimizer = bnb.optim.PagedAdamW8bit(
+                        trainable_params,
+                        lr=self.config.learning_rate,
+                        weight_decay=self.config.weight_decay,
+                        betas=(self.config.adam_beta1, self.config.adam_beta2)
+                    )
+                    print(f"Using PagedAdamW8bit optimizer (memory-efficient)")
+                except ImportError:
+                    print("bitsandbytes not available, falling back to AdamW")
+                    self.optimizer = AdamW(
+                        trainable_params,
+                        lr=self.config.learning_rate,
+                        weight_decay=self.config.weight_decay,
+                        betas=(self.config.adam_beta1, self.config.adam_beta2)
+                    )
+            else:
+                self.optimizer = AdamW(
+                    trainable_params,
+                    lr=self.config.learning_rate,
+                    weight_decay=self.config.weight_decay,
+                    betas=(self.config.adam_beta1, self.config.adam_beta2)
+                )
         else:
             self.optimizer = optimizer
 
         # Training statistics
         self.training_stats = defaultdict(list)
         self.global_step = 0
+        self.lr_scheduler = None  # 学习率调度器
+
+    def setup_scheduler(self, num_training_steps: int):
+        """
+        设置学习率调度器
+
+        Args:
+            num_training_steps: 总训练步数 (num_episodes)
+        """
+        from transformers import get_cosine_schedule_with_warmup, get_linear_schedule_with_warmup
+
+        # 计算warmup步数
+        warmup_steps = int(num_training_steps * self.config.warmup_ratio)
+
+        # 根据调度类型创建scheduler
+        if self.config.lr_scheduler_type == "cosine":
+            self.lr_scheduler = get_cosine_schedule_with_warmup(
+                self.optimizer,
+                num_warmup_steps=warmup_steps,
+                num_training_steps=num_training_steps
+            )
+            print(f"Using cosine LR scheduler: warmup_steps={warmup_steps}, total_steps={num_training_steps}")
+        elif self.config.lr_scheduler_type == "linear":
+            self.lr_scheduler = get_linear_schedule_with_warmup(
+                self.optimizer,
+                num_warmup_steps=warmup_steps,
+                num_training_steps=num_training_steps
+            )
+            print(f"Using linear LR scheduler: warmup_steps={warmup_steps}, total_steps={num_training_steps}")
+        else:
+            print(f"No LR scheduler (type={self.config.lr_scheduler_type})")
 
     def enable_training_mode(self):
         """启用训练模式"""
@@ -417,98 +487,75 @@ class GRPOTrainer:
         }
 
     def _has_template_residue(self, text: str) -> bool:
-        """检测模板残留词（全面版）"""
+        """检测模板残留词（精简版 - 只保留真正的模板词）"""
+        # 真正的模板残留词（模型复制了prompt模板）
         residue_patterns = [
-            # 角色描述残留
-            "你是一位",
+            # 角色描述残留（完整的角色声明）
+            "你是一位资深法官",
+            "你是一位检察官",
+            "你是一位辩护律师",
             "你是资深",
             "你是一名",
-            "作为法官",
-            "作为一位",
-            # 任务指令残留
-            "你的任务",
-            "你的决定",
-            "你的行动",
-            "你的下一个",
-            "你的问题",
-            "你的提问",
-            "你的判决",
-            # 输出要求残留
-            "请输出",
-            "请提出",
-            "请根据",
-            "请从以下",
-            "请选择",
-            "请回答",
-            "直接输出",
-            "输出要求",
-            "使用规范",
-            "使用法律",
-            # 选择题格式残留
-            "A.",
-            "B.",
-            "C.",
-            "D.",
-            "选项",
-            "选择最相关",
-            # 数量限制残留
-            "至少",
-            "不超过",
-            "不超过3个",
-            "至少3个",
-            "1次提问",
-            # 示例格式残留
-            "例如：",
-            "例如",
-            "示例",
-            # 文书标题残留（完整的文书标题）
-            "中级人民法院刑事",
-            "刑事判决书",
-            "刑事裁定书",
-            "起诉书",
-            # 其他指令词
-            "需要进一步",
-            "需要查明",
-            "需要确认",
-            "下一个问题",
-            "下一个调查",
-            "办案思路",
-            "分析现有信息",
-            "构建指控",
+
+            # 明确的指令格式残留
+            "请选择以下",
+            "请从以下选项",
+            "A.", "B.", "C.", "D.",  # 选择题格式
+            "选项A", "选项B",
+
+            # 完整的文书标题（不是片段）
+            "中级人民法院刑事判决书",
+            "刑事判决书（",
+            "起诉书（",
+
+            # 输出格式要求残留
+            "请按以下格式",
+            "使用规范格式",
+            "严格按照格式",
         ]
+
         for pattern in residue_patterns:
             if pattern in text:
                 return True
 
-        # 检测是否包含过多的"【】"符号（超过2个可能是模板）
-        bracket_count = text.count("【")
-        if bracket_count > 2:
+        # 检测过多【】符号（超过3个）
+        if text.count("【") > 3:
             return True
 
         return False
 
     def _is_query_semantic(self, text: str) -> bool:
-        """判断是否是提问（语义检测，更宽容版）"""
-        # 问题特征词（放宽范围）
+        """判断是否是提问（语义检测 - 扩展版）"""
+        # 问题特征词（大幅扩展）
         question_words = [
-            "什么", "如何", "是否", "为什么", "哪", "怎样", "多少",
-            "?", "？", "动机", "手段", "情况", "程度",
-            "自首", "赔偿", "认罪", "预谋", "故意",
-            "了解", "询问", "请问", "想问", "核实",
-            "确认", "查明", "调查", "讯问",
-            # 获取信息的动词
-            "供述", "辩称", "陈述", "说明",
-        ]
-        # 判断特征词（排除）
-        judgment_words = ["判处", "有期徒刑", "拘役", "罚金", "判决如下"]
+            # 疑问词
+            "什么", "如何", "是否", "为什么", "哪", "怎样", "多少", "几",
+            "?", "？",
 
-        # 包含问题词 + 不包含判决词 → 提问
+            # 法律调查关键词（核心）
+            "动机", "手段", "情况", "程度", "事实", "证据",
+            "自首", "赔偿", "认罪", "预谋", "故意", "过失",
+            "伤情", "伤口", "部位", "后果", "损失",
+
+            # 获取信息的动词
+            "了解", "询问", "请问", "想问", "核实",
+            "确认", "查明", "调查", "讯问", "审查",
+            "介绍", "说明", "陈述", "描述", "解释",
+            "供述", "辩称", "讲述", "阐述",
+
+            # 法律调查常用短语
+            "作案", "案发", "案后", "事后",
+            "被告", "被害人", "涉案", "涉案金额",
+            "情节", "程度", "时间", "地点",
+            "是否", "有无", "存在", "构成",
+        ]
+
+        # 判断特征词（排除）
+        judgment_words = ["判处", "有期徒刑", "拘役", "罚金", "判决如下", "罪名成立"]
+
+        # 包含任一问题词 + 不包含判决词 → 提问
         has_question = any(word in text for word in question_words)
         has_judgment = any(word in text for word in judgment_words)
-
-        # 额外检查：如果是获取供述/陈述的回复格式，也算有效query
-        if ("供述" in text or "辩称" in text or "陈述" in text) and "判处" not in text:
-            return True
 
         return has_question and not has_judgment
 
@@ -563,7 +610,7 @@ class GRPOTrainer:
 
     def _has_repetition(self, text: str) -> bool:
         """
-        检测输出是否有重复循环（改进中文检测）
+        检测输出是否有严重重复循环（宽松版）
 
         Args:
             text: 输出文本
@@ -571,47 +618,38 @@ class GRPOTrainer:
         Returns:
             True if repetition detected
         """
-        if len(text) < 10:  # 降低阈值
+        if len(text) < 20:  # 提高阈值
             return False
 
         # 1. 检查句子重复（中文标点分隔）
         sentences = re.split(r'[。，！？；]', text)
-        sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 3]
+        sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 5]  # 提高阈值
 
-        if len(sentences) >= 2:
-            # 检查是否有连续相同句子
+        if len(sentences) >= 3:
+            # 检查是否有连续2个以上相同句子
             for i in range(len(sentences) - 1):
-                if sentences[i] == sentences[i + 1]:
+                if sentences[i] == sentences[i + 1] and len(sentences[i]) > 10:
                     return True
-            # 检查是否有超过50%相同的句子
+            # 检查是否有超过70%相同的句子（提高阈值，只有30%以下unique才判定）
             unique_count = len(set(sentences))
-            if len(sentences) >= 3 and unique_count < len(sentences) * 0.5:
+            if unique_count < len(sentences) * 0.3:
                 return True
 
-        # 2. 检查短语重复（降低最小长度）
-        pattern = r'(.{8,}?)[。，\s]*\1'
+        # 2. 检查短语重复（提高最小长度）
+        pattern = r'(.{15,}?)[。，\s]*\1'  # 从8提高到15
         if re.search(pattern, text):
             return True
 
-        # 3. 检查问号分割重复
+        # 3. 检查问号分割重复（保留但放宽）
         if '?' in text or '？' in text:
             parts = re.split(r'[？?]', text)
-            parts = [p.strip() for p in parts if p.strip()]
-            if len(parts) >= 2:
+            parts = [p.strip() for p in parts if p.strip() and len(p.strip()) > 10]
+            if len(parts) >= 3:
                 unique_parts = set(parts)
-                if len(unique_parts) < len(parts) * 0.6:
+                if len(unique_parts) < len(parts) * 0.3:  # 提高阈值
                     return True
 
-        # 4. 检查子串重复（关键：无分隔符的重复）
-        # 遍历不同长度的子串，检测是否重复出现
-        text_len = len(text)
-        for length in range(min(12, text_len // 2), 3, -1):  # 从长到短
-            seen = set()
-            for i in range(text_len - length + 1):
-                substring = text[i:i+length]
-                if substring in seen:
-                    return True
-                seen.add(substring)
+        # 移除第4步：无分隔符子串检测（过于严格）
 
         return False
 
@@ -881,7 +919,7 @@ class GRPOTrainer:
         # 反向传播
         loss.backward()
 
-        # 梯度裁剪
+        # 梯度裁剪（使用配置中的max_grad_norm）
         torch.nn.utils.clip_grad_norm_(
             [p for p in self.policy_model.parameters() if p.requires_grad],
             self.config.max_grad_norm
@@ -889,6 +927,10 @@ class GRPOTrainer:
 
         # 更新参数
         self.optimizer.step()
+
+        # 更新学习率调度器
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.step()
 
     def get_training_stats(self) -> Dict:
         """Get training statistics"""

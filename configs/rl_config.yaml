@@ -20,6 +20,10 @@ grpo:
   # [新增] 生成质量控制
   repetition_penalty: 1.1  # 重复惩罚系数（>1减少重复）
 
+  # [新增] 生成长度控制
+  max_prompt_length: 2048  # Prompt最大长度
+  max_completion_length: 512  # 生成最大长度（保守值）
+
 # Environment Configuration
 environment:
   evidence_levels:
@@ -50,15 +54,24 @@ reward:
 
 # Training Configuration
 training:
-  learning_rate: 2e-5  # [调整] 从1e-5增加到2e-5，配合更大batch
+  learning_rate: 5e-6  # [修改] 从2e-5降到5e-6，更稳定
   batch_size: 1  # Process one case at a time (GRPO天然batch=1)
-  gradient_accumulation_steps: 1  # [新增] 不需要累积，显存足够
+  gradient_accumulation_steps: 4  # [新增] 从1增加到4，更平滑更新
   num_episodes: 2000  # [调整] 从1000增加到2000
   eval_interval: 100  # [调整] 从50增加到100
   save_interval: 200  # [调整] 从100增加到200
-  warmup_steps: 100  # [新增] warmup步数
-  max_grad_norm: 1.0  # [新增] 梯度裁剪
+  warmup_ratio: 0.1  # [新增] warmup比例（替代warmup_steps）
+  max_grad_norm: 0.1  # [修改] 从1.0降到0.1，更严格裁剪
   save_total_limit: 2  # [新增] 最多保留几个checkpoint（节省磁盘空间）
+
+  # [新增] 学习率调度
+  lr_scheduler_type: "cosine"  # cosine衰减
+
+  # [新增] 优化器参数
+  optim: "paged_adamw_8bit"  # 节省显存的优化器
+  weight_decay: 0.1  # 防止过拟合
+  adam_beta1: 0.9  # Adam动量
+  adam_beta2: 0.99  # Adam动量（比默认0.999更小）
 
 # Model Configuration
 model:
