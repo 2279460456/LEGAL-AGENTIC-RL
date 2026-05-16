@@ -182,8 +182,20 @@ python src/sft/train_sft.py --config configs/sft_config.yaml
 ```yaml
 GRPO参数:
   - group_size: 4 (每组采样4条轨迹)
-  - temperature: 1.0 (保证多样性)
+  - temperature: 0.9 (保证多样性)
   - max_turns: 10 (最大对话轮次)
+  - max_prompt_length: 2048 (Prompt最大长度)
+  - max_completion_length: 512 (生成最大长度)
+
+训练参数（2026-05-16优化）:
+  - learning_rate: 5e-6 (更稳定)
+  - max_grad_norm: 0.1 (更严格裁剪)
+  - gradient_accumulation_steps: 4 (等效batch=4)
+  - weight_decay: 0.1 (防止过拟合)
+  - lr_scheduler_type: "cosine" (cosine衰减)
+  - warmup_ratio: 0.1 (warmup比例)
+  - optim: "paged_adamw_8bit" (节省显存)
+  - adam_beta2: 0.99 (适应RL梯度波动)
 
 奖励权重:
   - λ₁=0.5 (准确性)
@@ -455,8 +467,8 @@ python src/rl/train_rl.py --config configs/rl_config.yaml
 ---
 
 *文档创建时间: 2026-05-05*
-*最后更新: 2026-05-13*
-*状态: 完整实验阶段说明（含对话交互 + 上下文控制）*
+*最后更新: 2026-05-16*
+*状态: 完整实验阶段说明（含对话交互 + 训练稳定性优化）*
 
 ---
 
@@ -464,6 +476,8 @@ python src/rl/train_rl.py --config configs/rl_config.yaml
 
 | 日期 | 更新内容 |
 |------|---------|
+| 2026-05-16 | 训练稳定性优化：weight_decay、cosine lr scheduler、paged_adamw_8bit、gradient_accumulation_steps=4 |
+| 2026-05-16 | 参数调整：learning_rate 5e-6、max_grad_norm 0.1、adam_beta2 0.99 |
 | 2026-05-13 | 对话交互设计：证据释放格式化为控辩双方回复格式 |
 | 2026-05-13 | 上下文长度控制：防止多轮对话导致 token 爆炸 |
 | 2026-05-13 | 配置更新：新增 max_prompt_tokens、max_history_rounds 参数 |
