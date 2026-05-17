@@ -444,16 +444,19 @@ class GRPOTrainer:
                 "repetition_penalty": -0.3
             }
 
-        # 检测2：长度超限（新增：防止输出完整文书）
-        # 正常提问或判决应该在200字以内，超过可能输出了完整文书
-        if len(action_text) > 300:
-            # 如果是判决且包含关键信息，可以宽容一些
-            if not self._is_judgment_semantic(action_text):
+        # 检测2：长度超限（防止输出完整文书/案情）
+        # 正常提问<50字，判决<100字
+        # 超过100字可能输出了完整案情描述
+        if len(action_text) > 100:
+            # 判断类输出可以稍长（但不超过150字）
+            if self._is_judgment_semantic(action_text) and len(action_text) <= 150:
+                pass  # 判断输出100-150字可以接受
+            else:
                 return {
                     "type": "invalid",
                     "content": action_text,
                     "repetition_penalty": -0.1,
-                    "reason": "输出过长（可能输出了完整文书）"
+                    "reason": "输出过长（可能输出了完整文书/案情）"
                 }
 
         # 检测3：prompt模板残留（模型复制了模板词）
