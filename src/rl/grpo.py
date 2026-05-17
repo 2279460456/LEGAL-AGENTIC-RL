@@ -723,7 +723,21 @@ class GRPOTrainer:
 
         evidence_section = "\n\n已了解：\n%s" % revealed_text
 
-        prompt = "%s%s%s\n\n%s\n" % (case_section, history_section, evidence_section, instruction)
+        # ========== 5. 已问问题摘要（防止上下文丢失导致的重复提问）==========
+        asked_section = ""
+        asked_questions = state.get('asked_questions', [])
+        if asked_questions:
+            # 只显示关键词，节省空间
+            asked_keywords = []
+            for q in asked_questions[-10:]:  # 最近10个问题
+                # 提取问题关键词（如"动机"、"自首"等）
+                keywords = re.findall(r'动机|自首|手段|赔偿|预谋|故意|伤情|供述|证据|事实|后果|损失', q)
+                if keywords:
+                    asked_keywords.extend(keywords)
+            if asked_keywords:
+                asked_section = "\n已调查方向：" + "、".join(set(asked_keywords))
+
+        prompt = "%s%s%s%s\n\n%s\n" % (case_section, history_section, evidence_section, asked_section, instruction)
 
         # 预估prompt长度（粗略估算：1 token ≈ 1.5 中文字符）
         estimated_tokens = len(prompt) / 1.5
@@ -774,6 +788,7 @@ class GRPOTrainer:
                 "public_info": state.public_info,
                 "revealed_evidence": state.revealed_evidence,
                 "conversation_history": getattr(state, 'conversation_history', []),
+                "asked_questions": getattr(state, 'asked_questions', []),  # 已问问题（防重复）
                 "current_round": state.current_round,
                 "max_rounds": state.max_rounds
             }

@@ -158,6 +158,39 @@ R_total = 0.3·R_accuracy + 0.4·R_info + R_process
 | 3轮内且有调查 | +0.1 | 效率奖励 |
 | 达到最大轮次 | -0.2 | 轮次惩罚 |
 
+### 4.3 步级Reward（精简版）
+
+```python
+R_step = P_irrelevant  # 仅保留不相关问题惩罚
+```
+
+| 情况 | Reward | 说明 |
+|------|--------|------|
+| 提问无法律关键词 | -0.02 | 不相关问题惩罚 |
+
+**设计说明**：
+- **证据触发奖励**已统一在R_info（信息收集奖励）中计算，避免重复
+- **重复提问惩罚**已统一在无效输出处理机制中处理，避免重复惩罚
+
+### 4.4 防重复提问机制
+
+为避免上下文丢失导致模型重复提问，系统实现了以下机制：
+
+```python
+# environment.py
+class EvidenceEnvironment:
+    _asked_questions: List[str] = []  # 记录已问问题
+
+    def get_asked_questions(self) -> List[str]:
+        return self._asked_questions.copy()
+
+# grpo.py _build_prompt()
+asked_questions = state.get('asked_questions', [])
+if asked_questions:
+    # 提取关键词显示已调查方向
+    asked_section = "\n已调查方向：" + "、".join(keywords)
+```
+
 ---
 
 ## 5. 无效动作检测（2026-05-16修复）
@@ -236,10 +269,16 @@ training:
 ```
 src/rl/
 ├── environment.py     # RL环境（信息隐藏-触发机制）
+│   ├── _asked_questions      # NEW: 已问问题记录（防重复）
+│   ├── _calculate_step_reward()  # MODIFY: 移除重复奖励
+│   └── get_asked_questions()  # NEW: 获取已问问题
+│   └── AgentState.asked_questions  # NEW: 状态包含已问问题
 ├── grpo.py            # GRPO训练器（含检测规则）
 │   ├── _has_template_residue()  # 模板残留检测（已修复）
 │   ├── _has_repetition()        # 重复检测（已修复）
 │   ├── _is_query_semantic()     # 提问识别（已修复）
+│   ├── _build_prompt()          # MODIFY: 显示已调查方向摘要
+│   ├── _state_to_dict()         # MODIFY: 传递asked_questions
 │   └── setup_scheduler()        # NEW: 学习率调度器
 └── train_rl.py        # RL训练入口
 
@@ -265,8 +304,8 @@ python scripts/test_rl_flow.py
 ---
 
 *文档创建时间: 2026-05-13*
-*最后更新: 2026-05-16*
-*状态: LEGAL-AGENTIC-RL项目RL模块文档（训练稳定性优化版本）*
+*最后更新: 2026-05-17*
+*状态: LEGAL-AGENTIC-RL项目RL模块文档（奖励函数优化版本）*
 
 ---
 
@@ -274,6 +313,8 @@ python scripts/test_rl_flow.py
 
 | 日期 | 更新内容 |
 |------|---------|
+| 2026-05-17 | 奖励函数优化：移除步级奖励中的B_trigger和P_repeat，避免重复奖励/惩罚 |
+| 2026-05-17 | 防重复提问机制：新增_asked_questions记录和prompt中的已调查方向摘要 |
 | 2026-05-16 | 训练稳定性优化：weight_decay、cosine lr scheduler、paged_adamw_8bit |
 | 2026-05-16 | 检测规则修复：放宽 invalid 检测，避免正常输出被误判 |
 | 2026-05-16 | 参数调整：learning_rate 5e-6、max_grad_norm 0.1、gradient_accumulation_steps 4 |

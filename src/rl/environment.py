@@ -83,6 +83,7 @@ class AgentState:
     public_info: str
     revealed_evidence: List[str]
     conversation_history: List[Tuple[str, str]]  # (role, message)
+    asked_questions: List[str] = field(default_factory=list)  # 已问问题（防重复）
     current_round: int
     max_rounds: int
     is_terminal: bool = False
@@ -182,6 +183,9 @@ class EvidenceEnvironment:
         self._effective_actions: List[Dict] = []    # 触发证据的动作
         self._invalid_actions: List[Dict] = []      # 无效动作记录
 
+        # 已问问题记录（用于防止上下文丢失导致的重复提问）
+        self._asked_questions: List[str] = []       # 只记录问题，不记录回复
+
     def reset(self, case_data: Dict) -> AgentState:
         """
         Reset environment with new case.
@@ -209,6 +213,9 @@ class EvidenceEnvironment:
         self._effective_actions = []
         self._invalid_actions = []
 
+        # 重置已问问题记录
+        self._asked_questions = []
+
         return self._get_state()
 
     def _get_state(self) -> AgentState:
@@ -222,6 +229,7 @@ class EvidenceEnvironment:
             public_info=self.public_info,
             revealed_evidence=revealed,
             conversation_history=self.conversation_history.copy(),
+            asked_questions=self._asked_questions.copy(),
             current_round=self.current_round,
             max_rounds=self.max_rounds,
             is_terminal=self.is_terminal()
@@ -290,6 +298,15 @@ class EvidenceEnvironment:
             "evidence_discovered": list(self.revealed_levels),
             "final_reward": self.get_final_reward() if self.final_prediction else 0
         }
+
+    def get_asked_questions(self) -> List[str]:
+        """
+        获取已问过的问题列表（用于防止重复提问）
+
+        Returns:
+            已问问题列表（截断后的问题文本）
+        """
+        return self._asked_questions.copy()
 
     def step(self, action: Dict) -> StepResult:
         """
@@ -368,6 +385,12 @@ class EvidenceEnvironment:
         """Handle a query action"""
         self.current_round += 1
         self.conversation_history.append(("judge", query))
+
+        # 【新增】记录已问问题（用于防止上下文丢失导致重复提问）
+        # 只记录有效问题（不包含标记前缀、长度大于5字符）
+        if not query.startswith("[") and len(query) > 5:
+            # 截断存储，避免内存占用过大
+            self._asked_questions.append(query[:50])
 
         # Check if query triggers hidden evidence
         new_evidence = self._check_trigger(query)
@@ -516,6 +539,10 @@ class EvidenceEnvironment:
         """
         Calculate step reward for information gathering.
 
+        精简版：仅保留不相关问题惩罚
+        - 证据触发奖励已移至最终奖励的信息收集奖励中计算（避免重复）
+        - 重复惩罚已移至无效输出处理机制中统一处理（避免重复）
+
         Args:
             triggered: Whether new evidence was triggered
             query: Query text
@@ -525,16 +552,13 @@ class EvidenceEnvironment:
         """
         reward = 0.0
 
-        if triggered:
-            reward += 0.1  # Bonus for new evidence
+        # 证据触发奖励已移至 get_final_reward 的信息收集奖励中计算
+        # 避免同一行为被奖励两次（步级奖励 + 信息收集奖励）
 
-        # Check for repeated query
-        for role, msg in self.conversation_history[:-1]:
-            if msg == query:
-                reward -= 0.05  # Penalty for repetition
-                break
+        # 重复提问惩罚已移至无效输出处理机制中统一处理
+        # 使用 _has_repetition 方法进行全面检测，避免重复惩罚
 
-        # Check for irrelevant query (no legal keywords)
+        # Check for irrelevant query (no legal keywords) - 保留此项
         # 扩展覆盖所有罪名类型的法律关键词
         legal_keywords = [
             # 通用关键词

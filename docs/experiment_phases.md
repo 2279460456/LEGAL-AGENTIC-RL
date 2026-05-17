@@ -221,7 +221,7 @@ For each episode:
          
          b. 环境响应:
             - 若提问触发关键词 → 释放隐藏证据
-            - 计算step_reward (R_information)
+            - 计算step_reward (仅P_irrelevant，证据触发奖励统一在最终R_info中计算)
          
          c. 记录: (state, action, log_prob, reward)
          
@@ -467,8 +467,8 @@ python src/rl/train_rl.py --config configs/rl_config.yaml
 ---
 
 *文档创建时间: 2026-05-05*
-*最后更新: 2026-05-16*
-*状态: 完整实验阶段说明（含对话交互 + 训练稳定性优化）*
+*最后更新: 2026-05-17*
+*状态: 完整实验阶段说明（含对话交互 + 训练稳定性优化 + 奖励函数优化）*
 
 ---
 
@@ -476,6 +476,8 @@ python src/rl/train_rl.py --config configs/rl_config.yaml
 
 | 日期 | 更新内容 |
 |------|---------|
+| 2026-05-17 | 奖励函数优化：移除步级奖励中的B_trigger和P_repeat，避免重复奖励/惩罚 |
+| 2026-05-17 | 防重复提问机制：新增asked_questions记录和prompt中的已调查方向摘要 |
 | 2026-05-16 | 训练稳定性优化：weight_decay、cosine lr scheduler、paged_adamw_8bit、gradient_accumulation_steps=4 |
 | 2026-05-16 | 参数调整：learning_rate 5e-6、max_grad_norm 0.1、adam_beta2 0.99 |
 | 2026-05-13 | 对话交互设计：证据释放格式化为控辩双方回复格式 |
